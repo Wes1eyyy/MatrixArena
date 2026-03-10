@@ -1,13 +1,127 @@
-**MatrixArena: The Ultimate Decentralized Peer-Review Crucible for Flagship LLMs**
+# MatrixArena 🏟️
 
-As Large Language Models (LLMs) grow exponentially smarter, traditional static benchmarks like MMLU and HumanEval are becoming obsolete—plagued by data contamination, test-set memorization, and saturation. Meanwhile, human-centric evaluation platforms often struggle to accurately assess highly complex logical reasoning or advanced coding tasks due to cognitive limits and domain expertise barriers.
+> **A decentralised, peer-review evaluation framework where top-tier LLMs dynamically generate tasks, solve them, and judge each other.**
 
-**MatrixArena** is a next-generation, multi-agent evaluation framework designed to solve this. It introduces a dynamic, autonomous peer-review ecosystem where the world's most advanced AI models (such as GPT-4o, Claude 3.5 Sonnet, and Gemini 1.5 Pro) evaluate each other in a continuous, un-gameable loop.
+Static benchmarks like MMLU are easily gamed. MatrixArena replaces them with a continuous, rotating evaluation loop: models act as Generators, Solvers, and Judges in turn, producing an Elo-based leaderboard that is hard to overfit.
 
-In every automated cycle, models rotate through three distinct roles:
+---
 
-1. **The Generator:** Synthesizes a completely novel, complex task (e.g., an algorithmic challenge) along with strict edge-case test constraints.
-2. **The Solver:** Attempts to engineer a robust solution to the generated problem.
-3. **The Judges:** A blind panel of peer LLMs critically evaluates the solver's output based on multifaceted criteria like readability, efficiency, and logical soundness. A strict fairness constraint ensures no model can ever judge its own work.
+## Architecture
 
-Powered by `litellm` for seamless API routing and leveraging an Elo-based rating system, MatrixArena creates a self-evolving leaderboard. By replacing static questions with dynamic generation and human judges with an AI tribunal, MatrixArena provides the most rigorous, objective, and scalable evaluation of true LLM capabilities today.
+```
+MatrixArena/
+├── main.py                  # CLI entry point
+├── requirements.txt         # Python dependencies
+├── .env.example             # API key template
+│
+├── config/
+│   ├── settings.py          # Config loader (YAML + env vars)
+│   └── models.yaml          # Pool of participating models
+│
+├── prompts/                 # Prompt Engineering Library
+│   ├── generator.txt        # How to generate coding tasks
+│   ├── solver.txt           # How to output code solutions
+│   └── judge.txt            # Scoring dimensions + JSON schema
+│
+├── core/
+│   ├── gateway.py           # litellm wrapper (async, retries)
+│   ├── orchestrator.py      # Gen → Solve → Judge loop
+│   └── elo_rating.py        # Elo rating updates
+│
+├── sandbox/
+│   ├── Dockerfile           # Isolated execution env (placeholder)
+│   └── executor.py          # Mock executor (returns "Pass" in MVP)
+│
+├── data/
+│   ├── battles.jsonl        # Append-only battle log
+│   └── leaderboard.json     # Latest Elo snapshot
+│
+└── dashboard/
+    └── app.py               # Streamlit UI (stub)
+```
+
+---
+
+## Evaluation Cycle
+
+```
+┌─────────────┐     coding problem      ┌─────────────┐
+│  Generator  │ ──────────────────────▶ │   Solver    │
+│  (Model A)  │                         │  (Model B)  │
+└─────────────┘                         └──────┬──────┘
+                                               │ solution
+                                               ▼
+                                     ┌──────────────────┐
+                                     │   Judge Pool     │
+                                     │ (all except B)   │
+                                     └────────┬─────────┘
+                                              │ scores (JSON)
+                                              ▼
+                                       Elo Rating Update
+```
+
+**Fairness Rule:** A model **cannot judge its own answer**. The Solver is explicitly excluded from the Judge pool every cycle.
+
+---
+
+## Quick Start
+
+### 1. Clone & install dependencies
+
+```bash
+git clone https://github.com/Wes1eyyy/MatrixArena.git
+cd MatrixArena
+pip install -r requirements.txt
+```
+
+### 2. Configure API keys
+
+```bash
+cp .env.example .env
+# Edit .env and add your OpenAI, Anthropic, and Google API keys
+```
+
+### 3. Run an evaluation cycle
+
+```bash
+# Run 3 evaluation cycles (default)
+python main.py
+
+# Run a specific number of cycles
+python main.py --cycles 5
+```
+
+The leaderboard is printed at the end and persisted to `data/leaderboard.json`. Each cycle is logged to `data/battles.jsonl`.
+
+---
+
+## Configuration
+
+Edit `config/models.yaml` to change the model pool:
+
+```yaml
+models:
+  - id: gpt-4o
+    provider: openai
+    display_name: GPT-4o
+  - id: claude-3-5-sonnet-20240620
+    provider: anthropic
+    display_name: Claude 3.5 Sonnet
+  - id: gemini/gemini-1.5-pro
+    provider: google
+    display_name: Gemini 1.5 Pro
+
+initial_elo: 1200
+```
+
+At least **3 models** are required (one Generator, one Solver, one or more Judges).
+
+---
+
+## Roadmap
+
+- [ ] Real sandbox execution via Docker (replace `MockExecutor`)
+- [ ] Streamlit leaderboard dashboard (`dashboard/app.py`)
+- [ ] Persistent Elo history with time-series plots
+- [ ] Support for more model providers (Cohere, Mistral, etc.)
+- [ ] Task difficulty classification and weighted scoring
