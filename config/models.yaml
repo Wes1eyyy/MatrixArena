@@ -1,0 +1,23 @@
+# MatrixArena Model Pool Configuration
+#
+# Each entry defines a model identifier (as used by litellm) and a
+# human-readable display name.  Add or remove models freely — the
+# orchestrator picks up changes here automatically.
+
+models:
+  - id: gpt-4o
+    provider: openai
+    display_name: GPT-4o
+
+  - id: claude-3-5-sonnet-20240620
+    provider: anthropic
+    display_name: Claude 3.5 Sonnet
+
+  - id: gemini/gemini-1.5-pro
+    # Note: litellm requires the "gemini/" prefix for Google Gemini models
+    # to distinguish them from Vertex AI variants.
+    provider: google
+    display_name: Gemini 1.5 Pro
+
+# Starting Elo rating assigned to every new model
+initial_elo: 1200
