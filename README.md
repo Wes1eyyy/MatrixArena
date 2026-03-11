@@ -2,7 +2,7 @@
 
 > **A decentralised, peer-review evaluation framework where top-tier LLMs dynamically generate tasks, solve them, and judge each other.**
 
-Static benchmarks like MMLU are easily gamed. MatrixArena replaces them with a continuous, rotating evaluation loop: models act as Generators, Solvers, and Judges in turn, producing an Elo-based leaderboard that is hard to overfit.
+Static benchmarks like MMLU are easily gamed. MatrixArena replaces them with a continuous, rotating evaluation loop: one model generates a coding problem, **every model** independently solves it, and **all non-generator models** cross-judge every solution. The result is an Elo-based leaderboard that reflects multi-dimensional coding ability and is hard to overfit.
 
 ---
 
@@ -15,18 +15,18 @@ MatrixArena/
 ├── .env.example             # API key template
 │
 ├── config/
-│   ├── settings.py          # Config loader (YAML + env vars)
+│   ├── settings.py          # Config loader (YAML + env vars, auto-disables missing keys)
 │   └── models.yaml          # Pool of participating models
 │
 ├── prompts/                 # Prompt templates
 │   ├── generator.txt        # Novel problem generation + Elo incentive rules
-│   ├── solver.txt           # Solution output + originality warning
-│   └── judge.txt            # Scoring rubric + execution result integration
+│   ├── solver.txt           # Solution output + originality warning + Elo incentive
+│   └── judge.txt            # Scoring rubric + execution result + Judge Elo incentive
 │
 ├── core/
-│   ├── gateway.py           # litellm wrapper (async, retries, api_base support)
-│   ├── orchestrator.py      # Gen → Solve → Judge loop
-│   └── elo_rating.py        # Elo for Solver + Generator calibration score
+│   ├── gateway.py           # litellm async wrapper (retries, backoff, empty/truncation recovery)
+│   ├── orchestrator.py      # Full Gen → Solve × N → Execute × N → Judge × N² loop
+│   └── elo_rating.py        # Elo for Solvers (K=32) + Generator calibration (K=16)
 │
 ├── sandbox/
 │   ├── Dockerfile           # Isolated execution image (non-root, no network)
@@ -39,35 +39,56 @@ MatrixArena/
 │       └── <YYYYMMDD_HHMMSS>_c<N>/
 │           ├── summary.json
 │           ├── generator_problem.json
-│           ├── solver_solution.json
-│           ├── execution_result.json
-│           └── judge_<model_slug>.json
+│           ├── solver_<model_slug>.json       # one per solver
+│           ├── execution_<model_slug>.json    # one per solver
+│           └── judgments_<model_slug>.json    # one per solver (all judges)
 │
 └── dashboard/
-    └── app.py               # Streamlit UI (stub)
+    └── app.py               # Streamlit UI (leaderboard, Elo history, cycle detail)
 ```
 
 ---
 
 ## Evaluation Cycle
 
+Each cycle runs **5 sequential phases**:
+
 ```
-┌─────────────┐     coding problem      ┌─────────────┐
-│  Generator  │ ──────────────────────▶ │   Solver    │
-│  (Model A)  │                         │  (Model B)  │
-└─────────────┘                         └──────┬──────┘
-                                               │ solution
-                                               ▼
-                                     ┌──────────────────┐
-                                     │   Judge Pool     │
-                                     │ (all except B)   │
-                                     └────────┬─────────┘
-                                              │ scores (JSON)
-                                              ▼
-                                       Elo Rating Update
+Phase 1 ── GENERATION ──────────────────────────────────────────
+  1 randomly chosen Generator model creates a novel coding problem
+  (JSON: title, description, test_cases, evaluation_criteria)
+
+Phase 2 ── SOLVING (all N models, concurrent) ──────────────────
+  Every model in the pool — including the Generator — independently
+  writes a Python solution to the same problem.
+
+Phase 3 ── SANDBOX EXECUTION ───────────────────────────────────
+  Each of the N solutions is run locally in a subprocess sandbox.
+  Syntax check → test harness injection → per-test pass/fail.
+
+Phase 4 ── JUDGING (concurrent) ────────────────────────────────
+  All N-1 non-Generator models act as Judges.
+  Each Judge scores every solution except its own.
+  → N × (N-2) total scoring calls, all concurrent.
+
+Phase 5 ── ELO UPDATE ──────────────────────────────────────────
+  Each Solver's Elo is updated from its aggregate judge score (K=32).
+  The Generator's Elo is updated by a calibration formula:
+    outcome = 1 − |normalized_score − 0.5| × 2
+  Peaks at score=5/10 (good difficulty), penalises trivial or
+  impossible problems.
 ```
 
-**Fairness Rule:** A model **cannot judge its own answer**. The Solver is explicitly excluded from the Judge pool every cycle.
+**Fairness rule:** a model never judges its own solution.
+
+### Role matrix for N=10 models
+
+| Role | Count | Who |
+|---|---|---|
+| Generator | 1 | Randomly chosen each cycle |
+| Solvers | 10 | All models (inc. Generator) |
+| Judges per solution | 8 | All except Generator + the Solver being judged |
+| Total judge API calls | ~80 | Fully concurrent |
 
 ---
 
@@ -85,87 +106,161 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env and add your OpenAI, Anthropic, and Google API keys
+# Set OPENROUTER_API_KEY (required)
+# Set ARK_API_KEY if you want Doubao Seed 2.0 Code (optional)
 ```
 
-### 3. Run an evaluation cycle
+### 3. Run evaluation cycles
 
 ```bash
-# Run 3 evaluation cycles (default)
+# Run 3 cycles (default from .env NUM_CYCLES or hardcoded default)
 python main.py
 
 # Run a specific number of cycles
-python main.py --cycles 5
+python main.py --cycles 10
 ```
 
-The leaderboard is printed at the end and persisted to `data/leaderboard.json`. Each cycle is logged to `data/battles.jsonl`.
+Progress is printed in real time as each phase completes:
+
+```
+--- Cycle 1/3 ---
+  Generator  : openrouter/anthropic/claude-opus-4.6
+  Solvers    : all 10 models
+  Judges pool: 9 models (everyone except generator)
+  [1/5] Generating problem...
+        Problem : "Chrono-Gated Courier Network"
+  [2/5] Solving (10 solvers in parallel)...
+        [claude-opus-4.6] → 42 line(s) of code
+        [gemini-3-pro-preview] → 38 line(s) of code
+        ...
+  [3/5] Running sandbox execution for all solutions...
+        [claude-opus-4.6] 5/5 tests passed
+        ...
+  [4/5] Judging (72 calls: 10 solutions × ~8 judges each)...
+        [grok-4.1-fast] judged [gemini-3-pro-preview] → 8.5/10
+        ...
+  [5/5] Updating Elo ratings...
+  Overall avg : 7.42/10
+  Best solver : claude-opus-4.6 (8.90/10)
+```
+
+### 4. View the dashboard
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Opens a Streamlit web app with:
+- **Leaderboard** — Elo bar chart + ranked table
+- **Elo History** — per-cycle line chart with model filter
+- **Battle Log** — summary table of all cycles
+- **Cycle Detail** — per-solver code, execution results, judge radar chart, feedback
+
+---
+
+## CLI Reference
+
+| Command | Description |
+|---|---|
+| `python main.py` | Run cycles (default or `NUM_CYCLES` from `.env`) |
+| `python main.py --cycles N` | Run exactly N cycles |
+| `python main.py --health-check` | Ping all models and exit |
+| `python main.py --no-health-check` | Skip health check and run immediately |
+| `python main.py --reset-last` | Remove the most recent cycle and revert Elo |
+| `python main.py --reset-all` | Wipe all battles, leaderboard, and cycle artifacts |
+
+### Health check behaviour
+
+- **`[OK ]`** — model responded within timeout
+- **`[429]`** — model is temporarily rate-limited upstream; auto-excluded from this run
+- **`[FAIL]`** — hard error (auth, not found, etc.); run aborts unless `--no-health-check`
+
+---
+
+## Gateway Resilience
+
+`core/gateway.py` handles production edge cases automatically:
+
+| Situation | Behaviour |
+|---|---|
+| Rate limit (429) | Waits `retry_after_seconds` from the error, then retries |
+| Transient error | Exponential backoff: 1 s → 2 s → 4 s … |
+| Empty response | Detected as failure, retried with backoff |
+| Truncated response (`finish_reason=length`) | Retries with continuation prompt asking for complete JSON |
+| Health check 429 | Fast-fails immediately (no wait); model skipped for this run |
 
 ---
 
 ## Data Storage
 
-Every evaluation cycle writes outputs to two locations:
-
 ### `data/battles.jsonl` — compact append-only log
 
-One JSON line per cycle, containing role assignments, aggregate scores, per-judge scores, execution summary, and the post-cycle Elo snapshot. **Full solution code is omitted** to keep the file scannable.
+One JSON line per cycle. Fields:
 
-Useful for: Elo trend analysis, win-rate statistics, quick `grep` / `jq` queries.
+```jsonc
+{
+  "cycle_num": 1,
+  "timestamp": 1741696367,
+  "generator": "openrouter/anthropic/claude-opus-4.6",
+  "solvers": ["openrouter/anthropic/claude-opus-4.6", ...],   // all N models
+  "judges_pool": ["openrouter/google/gemini-3-pro-preview", ...],  // N-1
+  "problem_title": "Chrono-Gated Courier Network",
+  "average_scores": {"openrouter/anthropic/claude-opus-4.6": 8.9, ...},
+  "overall_average": 7.42,
+  "elo_after": {"openrouter/anthropic/claude-opus-4.6": 1218.4, ...}
+}
+```
 
 ### `data/cycles/<YYYYMMDD_HHMMSS>_c<N>/` — full per-cycle artifacts
 
-One directory per cycle, named by UTC timestamp and cycle number.
-
 | File | Contents |
 |---|---|
-| `summary.json` | Roles, scores, Elo snapshot, execution summary (no code) |
-| `generator_problem.json` | Complete Generator output: title, description, test cases, evaluation criteria |
-| `solver_solution.json` | Complete Solver output: runnable Python code + explanation with complexity |
-| `execution_result.json` | Sandbox per-test results: status, pass/fail per test case, stderr |
-| `judge_<slug>.json` | Per-judge output: 5-dimension scores, overall score, feedback text |
+| `summary.json` | Roles, per-solver scores, overall average, Elo snapshot |
+| `generator_problem.json` | Complete Generator output: title, description, test cases, criteria |
+| `solver_<slug>.json` | Runnable Python code + explanation (one file per solver) |
+| `execution_<slug>.json` | Sandbox result: per-test status, pass/fail count, stderr |
+| `judgments_<slug>.json` | All judge scores + feedback for this solver (one file per solver) |
 
-**Example directory layout after 2 cycles:**
+**Example layout after 1 cycle with 10 models:**
 
 ```
-data/
-├── battles.jsonl
-├── leaderboard.json
-└── cycles/
-    ├── 20260311_143022_c1/
-    │   ├── summary.json
-    │   ├── generator_problem.json
-    │   ├── solver_solution.json
-    │   ├── execution_result.json
-    │   ├── judge_openrouter_anthropic_claude-opus-4_6.json
-    │   └── judge_openrouter_google_gemini-3-pro-preview.json
-    └── 20260311_143301_c2/
-        └── ...
+data/cycles/20260311_143022_c1/
+├── summary.json
+├── generator_problem.json
+├── solver_openrouter_anthropic_claude-opus-4_6.json
+├── solver_openrouter_google_gemini-3-pro-preview.json
+├── ... (×10 solvers)
+├── execution_openrouter_anthropic_claude-opus-4_6.json
+├── ... (×10)
+├── judgments_openrouter_anthropic_claude-opus-4_6.json
+└── ... (×10)
 ```
 
-> All files under `data/` are git-ignored and never committed to the repository.
+> All files under `data/` are git-ignored and never committed.
 
 ---
 
 ## Configuration
 
-Edit `config/models.yaml` to change the model pool:
+Edit `config/models.yaml` to change the model pool. Any model with an `api_key_env` pointing to an unset environment variable is automatically disabled at startup.
 
 ```yaml
 models:
-  - id: gpt-4o
-    provider: openai
-    display_name: GPT-4o
-  - id: claude-3-5-sonnet-20240620
-    provider: anthropic
-    display_name: Claude 3.5 Sonnet
-  - id: gemini/gemini-1.5-pro
-    provider: google
-    display_name: Gemini 1.5 Pro
+  - id: openrouter/anthropic/claude-opus-4.6
+    provider: openrouter
+    display_name: Claude Opus 4.6
+
+  # Direct endpoint (non-OpenRouter)
+  - id: openai/doubao-seed-2.0-code
+    provider: ark
+    display_name: Doubao Seed 2.0 Code
+    api_base: https://ark.cn-beijing.volces.com/api/coding/v3
+    api_key_env: ARK_API_KEY   # disabled if ARK_API_KEY is not set
 
 initial_elo: 1200
 ```
 
-At least **3 models** are required (one Generator, one Solver, one or more Judges).
+Minimum pool size: **3 models** (1 generator + 1 solver + 1 judge).
 
 ---
 
@@ -176,7 +271,11 @@ At least **3 models** are required (one Generator, one Solver, one or more Judge
 - [x] Full per-cycle artifact storage (`data/cycles/`)
 - [x] OpenRouter multi-provider support (10 models)
 - [x] ARK (ByteDance) direct endpoint support for Doubao
-- [ ] Streamlit leaderboard dashboard (`dashboard/app.py`)
+- [x] All-vs-all interaction: every model solves, all non-generator models judge
+- [x] Streamlit dashboard (leaderboard, Elo history, cycle detail, per-solver view)
+- [x] Health check with rate-limit awareness (429 → skip, hard fail → abort)
+- [x] Gateway resilience (empty response retry, truncation recovery, exponential backoff)
+- [x] `--reset-last` / `--reset-all` data management commands
 - [ ] Docker sandbox upgrade (replace subprocess with `docker run`)
-- [ ] Persistent Elo history with time-series plots
 - [ ] Task difficulty classification and weighted scoring
+- [ ] Multi-language support (JavaScript, Go, …)
