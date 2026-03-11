@@ -71,6 +71,8 @@ class Settings:
             key_value = os.getenv(cfg.api_key_env, "")
             if key_value:
                 extra["api_key"] = key_value
+        # Google AI Studio: litellm reads GEMINI_API_KEY automatically via
+        # os.environ, but we also pass it explicitly for consistency
         return extra
 
     # ------------------------------------------------------------------

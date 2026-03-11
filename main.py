@@ -352,15 +352,32 @@ def _save_cycle_artifacts(result: dict) -> None:
     solver_<slug>.json            — solution per solver (N files)
     execution_<slug>.json         — sandbox result per solver (N files)
     judgments_<slug>.json         — all judge results for each solver (N files)
+    raw/generator.txt             — raw LLM output for the generator
+    raw/solver_<slug>.txt         — raw LLM output per solver (N files)
+    raw/judge_<j>_for_<s>.txt     — raw LLM output per judge×solver pair
     """
     ts = datetime.fromtimestamp(result["timestamp"], tz=timezone.utc)
     dir_name = f"{ts.strftime('%Y%m%d_%H%M%S')}_c{result.get('cycle_num', 0)}"
     cycle_dir = os.path.join(_CYCLES_DIR, dir_name)
     os.makedirs(cycle_dir, exist_ok=True)
 
+    def _strip_raw(obj: object) -> object:
+        """Recursively remove '_raw_output' keys before writing JSON."""
+        if isinstance(obj, dict):
+            return {k: _strip_raw(v) for k, v in obj.items() if k != "_raw_output"}
+        if isinstance(obj, list):
+            return [_strip_raw(x) for x in obj]
+        return obj
+
     def _write(filename: str, data: object) -> None:
         with open(os.path.join(cycle_dir, filename), "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False)
+            json.dump(_strip_raw(data), fh, indent=2, ensure_ascii=False)
+
+    def _write_raw(filename: str, text: str) -> None:
+        raw_dir = os.path.join(cycle_dir, "raw")
+        os.makedirs(raw_dir, exist_ok=True)
+        with open(os.path.join(raw_dir, filename), "w", encoding="utf-8") as fh:
+            fh.write(text)
 
     def _slug(model_id: str) -> str:
         return re.sub(r"[^\w-]", "_", model_id)[:60]
@@ -385,7 +402,12 @@ def _save_cycle_artifacts(result: dict) -> None:
         **result["problem"],
     })
 
-    # per-solver: solution, execution, judgments
+    # Raw output: generator
+    gen_raw = result["problem"].get("_raw_output")
+    if gen_raw:
+        _write_raw("generator.txt", gen_raw)
+
+    # per-solver: solution, execution, judgments, raw outputs
     for solver_id, solution in result["solutions"].items():
         slug = _slug(solver_id)
         _write(f"solver_{slug}.json", {"model": solver_id, **solution})
@@ -395,6 +417,19 @@ def _save_cycle_artifacts(result: dict) -> None:
             "average_score": result["average_scores"].get(solver_id),
             "judge_results": result["judge_scores"].get(solver_id, []),
         })
+        # Raw output: solver
+        solver_raw = solution.get("_raw_output")
+        if solver_raw:
+            _write_raw(f"solver_{slug}.txt", solver_raw)
+
+    # Raw output: judges (one file per judge×solver pair)
+    for solver_id, judge_results in result["judge_scores"].items():
+        s_slug = _slug(solver_id)
+        for jr in judge_results:
+            judge_raw = jr.get("_raw_output")
+            if judge_raw:
+                j_slug = _slug(jr.get("judge", "unknown"))
+                _write_raw(f"judge_{j_slug}_for_{s_slug}.txt", judge_raw)
 
 
 def _save_leaderboard(leaderboard: list[tuple[str, float]]) -> None:

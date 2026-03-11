@@ -54,6 +54,7 @@ problem's specific constraints, penalise accordingly under Correctness and Effic
 ## Output Format (strict JSON)
 
 Respond with **only** a JSON object — no markdown fences, no extra text.
+***VERY IMPORTANT* your response should strictly follows Output Format, otherwise, you may lose all your marks.
 
 {
   "scores": {

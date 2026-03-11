@@ -218,7 +218,9 @@ class Orchestrator:
                 max_tokens=16384,
                 **self._extra(generator),
             )
-            return parse_json_response(raw)
+            parsed = parse_json_response(raw)
+            parsed["_raw_output"] = raw
+            return parsed
         except GatewayError as exc:
             logger.error("Generation failed (gateway): %s", exc)
             return self._fallback_problem()
@@ -238,7 +240,9 @@ class Orchestrator:
                 max_tokens=16384,
                 **self._extra(solver),
             )
-            return parse_json_response(raw)
+            parsed = parse_json_response(raw)
+            parsed["_raw_output"] = raw
+            return parsed
         except (GatewayError, ValueError) as exc:
             logger.error("Solving failed: %s", exc)
             return {"solution_code": "", "explanation": "Solver failed to produce a response."}
@@ -281,6 +285,7 @@ class Orchestrator:
             raw = await call_model(judge, prompt, temperature=0.2, **self._extra(judge))
             result = parse_json_response(raw)
             result["judge"] = judge
+            result["_raw_output"] = raw
             return result
         except (GatewayError, ValueError) as exc:
             logger.error("Judge %s failed: %s", judge, exc)
