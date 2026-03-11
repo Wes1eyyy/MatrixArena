@@ -27,7 +27,7 @@ from typing import Any
 from config.settings import Settings
 from core.elo_rating import EloRating
 from core.gateway import GatewayError, call_model, parse_json_response
-from sandbox.executor import MockExecutor
+from sandbox.executor import SubprocessExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class Orchestrator:
         self.elo = EloRating(
             initial_ratings={m: settings.initial_elo for m in settings.model_names}
         )
-        self.executor = MockExecutor()
+        self.executor = SubprocessExecutor()
 
         # Pre-load prompt templates
         self._generator_prompt = settings.load_prompt("generator")
@@ -72,11 +72,20 @@ class Orchestrator:
         # ── 3. Solving Phase ────────────────────────────────────────────
         solution = await self._solve_problem(solver, problem)
 
-        # ── 4. (Optional) Sandbox Execution ────────────────────────────
-        execution_result = self.executor.run(solution.get("solution_code", ""))
+        # ── 4. Sandbox Execution ───────────────────────────────────────────
+        test_cases = problem.get("test_cases", [])
+        execution_result = self.executor.run(
+            solution.get("solution_code", ""),
+            test_cases=test_cases,
+        )
+        logger.info(
+            "Execution: %s — %s",
+            execution_result["status"],
+            execution_result["summary"],
+        )
 
         # ── 5. Judging Phase (concurrent) ───────────────────────────────
-        judge_results = await self._judge_solution(judges, problem, solution)
+        judge_results = await self._judge_solution(judges, problem, solution, execution_result)
 
         # ── 6. Aggregate Scores ─────────────────────────────────────────
         average_score = self._aggregate_scores(judge_results)
@@ -153,11 +162,27 @@ class Orchestrator:
         judges: list[str],
         problem: dict[str, Any],
         solution: dict[str, Any],
+        execution_result: dict,
     ) -> list[dict[str, Any]]:
         """Call all judges concurrently and collect their scores."""
         problem_text = json.dumps(problem, indent=2)
         solution_text = json.dumps(solution, indent=2)
         criteria = problem.get("evaluation_criteria", "Correctness, efficiency, and clarity.")
+        execution_text = (
+            f"Status : {execution_result['status']}\n"
+            f"Summary: {execution_result['summary']}\n"
+        )
+        if execution_result.get("tests"):
+            for t in execution_result["tests"]:
+                execution_text += (
+                    f"  Test {t['test']}: [{t['status'].upper()}] "
+                    f"input={t['input']!r} "
+                    f"expected={t['expected']!r} "
+                    f"actual={t['actual']!r}"
+                    + (f" error={t['error']!r}" if t.get("error") else "") + "\n"
+                )
+        if execution_result.get("stderr"):
+            execution_text += f"Stderr : {execution_result['stderr']}\n"
 
         async def _judge_one(judge: str) -> dict[str, Any]:
             prompt = (
@@ -165,6 +190,7 @@ class Orchestrator:
                 .replace("{problem}", problem_text)
                 .replace("{evaluation_criteria}", criteria)
                 .replace("{solution}", solution_text)
+                .replace("{execution_result}", execution_text)
             )
             try:
                 raw = await call_model(judge, prompt, temperature=0.2, **self._extra(judge))

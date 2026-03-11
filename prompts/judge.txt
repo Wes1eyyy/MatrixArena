@@ -81,4 +81,18 @@ Respond with **only** a JSON object — no markdown fences, no extra text.
 
 {solution}
 
+## Sandbox Execution Result
+
+The solution was automatically executed against the test cases in an isolated
+subprocess.  Use this as **objective evidence** for your Correctness and
+Robustness scores — do not ignore it.
+
+```
+{execution_result}
+```
+
+Note: if a test shows ``SKIP`` or ``ERROR``, it means the test harness could
+not automatically invoke the function (e.g. the input format was non-standard).
+In that case, manually trace the logic to assess correctness.
+
 Provide your judgment now.
