@@ -51,9 +51,14 @@ class Orchestrator:
     # Public API
     # ------------------------------------------------------------------
 
-    async def run_cycle(self) -> dict[str, Any]:
+    async def run_cycle(self, cycle_num: int = 0) -> dict[str, Any]:
         """
         Execute one full evaluation cycle.
+
+        Parameters
+        ----------
+        cycle_num : int
+            The 1-based cycle index (used for artifact storage).
 
         Returns
         -------
@@ -97,10 +102,13 @@ class Orchestrator:
         self.elo.update_generator(generator=generator, judges=judges, score=average_score)
 
         return {
+            "cycle_num": cycle_num,
             "timestamp": int(time.time()),
             "generator": generator,
             "solver": solver,
             "judges": judges,
+            "problem": problem,
+            "solution": solution,
             "problem_title": problem.get("title", "unknown"),
             "execution_result": execution_result,
             "judge_scores": judge_results,
