@@ -148,10 +148,19 @@ class Orchestrator:
     async def _generate_problem(self, generator: str) -> dict[str, Any]:
         """Ask the Generator model to produce a coding problem."""
         try:
-            raw = await call_model(generator, self._generator_prompt, temperature=0.9, **self._extra(generator))
+            raw = await call_model(
+                generator,
+                self._generator_prompt,
+                temperature=0.9,
+                max_tokens=16384,
+                **self._extra(generator),
+            )
             return parse_json_response(raw)
-        except (GatewayError, ValueError) as exc:
-            logger.error("Generation failed: %s", exc)
+        except GatewayError as exc:
+            logger.error("Generation failed (gateway): %s", exc)
+            return self._fallback_problem()
+        except ValueError as exc:
+            logger.error("Generation failed (JSON parse): %s", exc)
             return self._fallback_problem()
 
     async def _solve_problem(self, solver: str, problem: dict[str, Any]) -> dict[str, Any]:
@@ -159,7 +168,13 @@ class Orchestrator:
         problem_text = json.dumps(problem, indent=2)
         prompt = self._solver_prompt_template.replace("{problem}", problem_text)
         try:
-            raw = await call_model(solver, prompt, temperature=0.4, **self._extra(solver))
+            raw = await call_model(
+                solver,
+                prompt,
+                temperature=0.4,
+                max_tokens=16384,
+                **self._extra(solver),
+            )
             return parse_json_response(raw)
         except (GatewayError, ValueError) as exc:
             logger.error("Solving failed: %s", exc)

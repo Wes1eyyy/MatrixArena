@@ -102,6 +102,14 @@ async def call_model(
                 **extra,
             )
             content: str = response.choices[0].message.content or ""
+            finish_reason: str = response.choices[0].finish_reason or ""
+            if finish_reason == "length":
+                logger.warning(
+                    "Model %s hit max_tokens=%d (finish_reason=length). "
+                    "Response may be truncated.",
+                    model,
+                    max_tokens,
+                )
             return content.strip()
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -129,6 +137,43 @@ async def call_model(
     ) from last_exc
 
 
+def _extract_json_object(text: str) -> str | None:
+    """
+    Find the first complete JSON object ``{...}`` in *text* using brace counting.
+
+    This handles two common failure modes:
+    - Model prefixes the JSON with prose (``Sure! Here is your JSON: {...}``)
+    - Response is wrapped in markdown fences that weren't caught by the fence stripper
+
+    Returns the extracted substring, or None if no complete object is found.
+    """
+    depth = 0
+    start = None
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                return text[start : i + 1]
+    return None
+
+
 def parse_json_response(raw: str) -> dict[str, Any]:
     """
     Parse a JSON response from a model, stripping common artefacts such as
@@ -153,14 +198,25 @@ def parse_json_response(raw: str) -> dict[str, Any]:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
-        # Remove the opening fence line (e.g. ```json)
-        lines = lines[1:]
-        # Remove the closing fence line
+        lines = lines[1:]  # Remove the opening fence line (e.g. ```json)
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
 
+    # Fast path: direct parse
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Could not parse model response as JSON: {exc}\nRaw:\n{raw}") from exc
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: brace-matching extraction (handles prose prefix or truncated suffix)
+    extracted = _extract_json_object(cleaned)
+    if extracted:
+        try:
+            return json.loads(extracted)
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(
+        f"Could not parse model response as JSON.\nRaw (first 500 chars):\n{raw[:500]}"
+    )
