@@ -47,12 +47,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def health_check(settings: Settings) -> list[str]:
+_RATE_LIMIT_MARKERS = ("ratelimiterror", "429", "rate_limit", "rate-limit", "retry_after")
+
+
+def _is_rate_limit(err: str) -> bool:
+    low = err.lower()
+    return any(m in low for m in _RATE_LIMIT_MARKERS)
+
+
+async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
     """
     Ping every enabled model concurrently with a minimal prompt.
 
-    Prints a live status line per model and returns the list of model IDs
-    that failed, so the caller can decide whether to abort.
+    Returns
+    -------
+    hard_failed : list[str]
+        Model IDs with hard errors (auth, not found, etc.) — caller should abort.
+    rate_limited : list[str]
+        Model IDs that returned a 429 rate-limit — caller should skip for this run.
     """
     models = settings.models
     print(f"Health check ({len(models)} model(s))...")
@@ -76,20 +88,24 @@ async def health_check(settings: Settings) -> list[str]:
 
     results = await asyncio.gather(*[_ping(m) for m in models])
 
-    failed: list[str] = []
+    hard_failed: list[str] = []
+    rate_limited: list[str] = []
     for m, (display, ok, elapsed, err) in zip(models, results):
-        icon = "OK " if ok else "FAIL"
         timing = f"[{elapsed:.2f}s]"
         if ok:
-            print(f"  [{icon}]  {display:<40} {timing}")
+            print(f"  [OK ]  {display:<40} {timing}")
+        elif _is_rate_limit(err):
+            print(f"  [429 ] {display:<40} {timing}  rate-limited (will skip this run)")
+            rate_limited.append(m.id)
         else:
             short_err = err.splitlines()[0][:80] if err else "unknown error"
-            print(f"  [{icon}] {display:<40} {timing}  {short_err}")
-            failed.append(m.id)
+            print(f"  [FAIL] {display:<40} {timing}  {short_err}")
+            hard_failed.append(m.id)
 
-    passed = len(models) - len(failed)
+    total_failed = len(hard_failed) + len(rate_limited)
+    passed = len(models) - total_failed
     print(f"Health check complete: {passed}/{len(models)} passed.\n")
-    return failed
+    return hard_failed, rate_limited
 
 
 
@@ -106,10 +122,24 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
     print()
 
     if not skip_health_check:
-        failed = await health_check(settings)
-        if failed:
-            print(f"ABORT: {len(failed)} model(s) failed health check:")
-            for f in failed:
+        hard_failed, rate_limited = await health_check(settings)
+
+        # Rate-limited: temporarily remove from this run's model pool
+        if rate_limited:
+            print(f"WARNING: {len(rate_limited)} model(s) are rate-limited and will be excluded from this run:")
+            for mid in rate_limited:
+                print(f"  - {mid}")
+            settings.models = [m for m in settings.models if m.id not in rate_limited]
+            if len(settings.models) < 3:
+                print(f"ABORT: Only {len(settings.models)} model(s) remain after excluding rate-limited ones.")
+                print("Need at least 3 models (1 generator + 1 solver + 1 judge). Re-run later or add more models.")
+                raise SystemExit(1)
+            print(f"  Continuing with {len(settings.models)} model(s).\n")
+
+        # Hard failures: abort
+        if hard_failed:
+            print(f"ABORT: {len(hard_failed)} model(s) failed health check:")
+            for f in hard_failed:
                 print(f"  - {f}")
             print("Fix the failing models or run with --no-health-check to skip.")
             raise SystemExit(1)
@@ -261,8 +291,8 @@ def main() -> None:
         print("=" * 60)
         print("  MatrixArena — Model Health Check")
         print("=" * 60)
-        failed = asyncio.run(health_check(settings))
-        raise SystemExit(1 if failed else 0)
+        hard_failed, rate_limited = asyncio.run(health_check(settings))
+        raise SystemExit(1 if (hard_failed or rate_limited) else 0)
 
     cycles = args.cycles
     if cycles is None:
