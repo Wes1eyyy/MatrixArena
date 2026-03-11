@@ -153,6 +153,15 @@ async def call_model(
             raise GatewayError(
                 f"Model '{model}' timed out after {request_timeout}s."
             )
+        except asyncio.CancelledError:
+            # aiohttp can raise CancelledError during cleanup after a timeout cancel
+            logger.warning(
+                "Model %s cancelled (attempt %d/%d) — treating as timeout.",
+                model, attempt, retries + 1,
+            )
+            raise GatewayError(
+                f"Model '{model}' request was cancelled (possible timeout)."
+            )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             is_rl = _is_rate_limit(exc)

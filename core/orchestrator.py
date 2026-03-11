@@ -92,7 +92,13 @@ class Orchestrator:
         solve_queue: asyncio.Queue = asyncio.Queue()
 
         async def _solve_and_queue(model: str) -> None:
-            sol = await self._solve_problem(model, problem)
+            try:
+                sol = await self._solve_problem(model, problem)
+            except BaseException as exc:  # includes CancelledError from aiohttp cleanup
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.error("Solving task for %s failed unexpectedly: %s", model, exc)
+                sol = {"solution_code": "", "explanation": f"Solver task failed: {exc}"}
             await solve_queue.put((model, sol))
 
         solve_tasks = [asyncio.create_task(_solve_and_queue(m)) for m in solvers]
@@ -125,10 +131,16 @@ class Orchestrator:
         judge_queue: asyncio.Queue = asyncio.Queue()
 
         async def _judge_and_queue(solver_model: str, judge_model: str) -> None:
-            jr = await self._call_single_judge(
-                judge_model, problem,
-                solutions[solver_model], execution_results[solver_model],
-            )
+            try:
+                jr = await self._call_single_judge(
+                    judge_model, problem,
+                    solutions[solver_model], execution_results[solver_model],
+                )
+            except BaseException as exc:  # includes CancelledError from aiohttp cleanup
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.error("Judge task %s->%s failed unexpectedly: %s", judge_model, solver_model, exc)
+                jr = {"judge": judge_model, "overall_score": 5.0, "error": str(exc)}
             await judge_queue.put((solver_model, jr))
 
         judge_tasks = [
@@ -141,7 +153,10 @@ class Orchestrator:
             score     = jr.get("overall_score", "?")
             j_name    = jr.get("judge", "?").split("/")[-1]
             s_name    = solver_id.split("/")[-1]
-            status    = "error" if jr.get("error") else f"{score:.1f}/10"
+            try:
+                status = "error" if jr.get("error") else f"{float(score):.1f}/10"
+            except (TypeError, ValueError):
+                status = f"{score}/10"
             _emit(f"      [{j_name}] judged [{s_name}] → {status}")
         await asyncio.gather(*judge_tasks)
 
@@ -278,7 +293,12 @@ class Orchestrator:
     @staticmethod
     def _aggregate_scores(judge_results: list[dict[str, Any]]) -> float:
         """Return the mean overall_score across all judge results."""
-        scores = [r.get("overall_score", 5.0) for r in judge_results]
+        scores = []
+        for r in judge_results:
+            try:
+                scores.append(float(r.get("overall_score", 5.0)))
+            except (TypeError, ValueError):
+                scores.append(5.0)
         return sum(scores) / len(scores) if scores else 5.0
 
     # ------------------------------------------------------------------
