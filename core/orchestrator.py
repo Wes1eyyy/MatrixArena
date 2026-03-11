@@ -117,13 +117,18 @@ class Orchestrator:
         return generator, solver, judges
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Phase helpers
     # ------------------------------------------------------------------
+
+    def _extra(self, model: str) -> dict[str, str]:
+        """Return extra litellm kwargs (api_base, api_key) for *model*."""
+        return self.settings.model_extra(model)
 
     async def _generate_problem(self, generator: str) -> dict[str, Any]:
         """Ask the Generator model to produce a coding problem."""
         try:
-            raw = await call_model(generator, self._generator_prompt, temperature=0.9)
+            raw = await call_model(generator, self._generator_prompt, temperature=0.9, **self._extra(generator))
             return parse_json_response(raw)
         except (GatewayError, ValueError) as exc:
             logger.error("Generation failed: %s", exc)
@@ -134,7 +139,7 @@ class Orchestrator:
         problem_text = json.dumps(problem, indent=2)
         prompt = self._solver_prompt_template.replace("{problem}", problem_text)
         try:
-            raw = await call_model(solver, prompt, temperature=0.4)
+            raw = await call_model(solver, prompt, temperature=0.4, **self._extra(solver))
             return parse_json_response(raw)
         except (GatewayError, ValueError) as exc:
             logger.error("Solving failed: %s", exc)
@@ -159,7 +164,7 @@ class Orchestrator:
                 .replace("{solution}", solution_text)
             )
             try:
-                raw = await call_model(judge, prompt, temperature=0.2)
+                raw = await call_model(judge, prompt, temperature=0.2, **self._extra(judge))
                 result = parse_json_response(raw)
                 result["judge"] = judge
                 return result

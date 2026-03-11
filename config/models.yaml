@@ -42,5 +42,12 @@ models:
     provider: openrouter
     display_name: Qwen3.5 397B A17B
 
+  # ByteDance Ark — OpenAI-compatible endpoint, direct access (no OpenRouter)
+  - id: openai/doubao-seed-2.0-code
+    provider: ark
+    display_name: Doubao Seed 2.0 Code
+    api_base: https://ark.cn-beijing.volces.com/api/coding/v3
+    api_key_env: ARK_API_KEY
+
 # Starting Elo rating assigned to every new model
 initial_elo: 1200

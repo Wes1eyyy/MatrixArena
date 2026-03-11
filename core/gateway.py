@@ -30,6 +30,8 @@ async def call_model(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     retries: int = 2,
+    api_base: str | None = None,
+    api_key: str | None = None,
 ) -> str:
     """
     Send a prompt to *model* and return the response text.
@@ -38,7 +40,7 @@ async def call_model(
     ----------
     model:
         litellm model identifier, e.g. ``"gpt-4o"`` or
-        ``"claude-3-5-sonnet-20240620"``.
+        ``"openai/doubao-seed-2.0-code"``.
     prompt:
         The full prompt to send as the user message.
     temperature:
@@ -47,6 +49,10 @@ async def call_model(
         Maximum number of tokens to generate.
     retries:
         How many additional attempts to make on transient errors.
+    api_base:
+        Optional custom base URL (for OpenAI-compatible third-party endpoints).
+    api_key:
+        Optional API key override (resolved from env by Settings.model_extra).
 
     Returns
     -------
@@ -61,6 +67,13 @@ async def call_model(
     messages = [{"role": "user", "content": prompt}]
     last_exc: Exception | None = None
 
+    # Build optional extra kwargs for non-standard endpoints
+    extra: dict[str, str] = {}
+    if api_base:
+        extra["api_base"] = api_base
+    if api_key:
+        extra["api_key"] = api_key
+
     for attempt in range(1, retries + 2):
         try:
             response = await litellm.acompletion(
@@ -68,6 +81,7 @@ async def call_model(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                **extra,
             )
             content: str = response.choices[0].message.content or ""
             return content.strip()

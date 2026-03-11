@@ -24,6 +24,8 @@ class ModelConfig:
     id: str
     provider: str
     display_name: str
+    api_base: str | None = None   # custom base URL for OpenAI-compatible endpoints
+    api_key_env: str | None = None  # env var name that holds the API key for this model
 
 
 @dataclass
@@ -46,6 +48,31 @@ class Settings:
         """Return the list of model IDs (as understood by litellm)."""
         return [m.id for m in self.models]
 
+    @property
+    def model_map(self) -> dict[str, ModelConfig]:
+        """Return a dict mapping model ID → ModelConfig for O(1) lookup."""
+        return {m.id: m for m in self.models}
+
+    def model_extra(self, model_id: str) -> dict[str, str]:
+        """
+        Return extra kwargs to pass to litellm for *model_id*.
+
+        Currently supports:
+        - ``api_base``: forwarded when set
+        - ``api_key``:  resolved from the env var named in ``api_key_env``
+        """
+        cfg = self.model_map.get(model_id)
+        if cfg is None:
+            return {}
+        extra: dict[str, str] = {}
+        if cfg.api_base:
+            extra["api_base"] = cfg.api_base
+        if cfg.api_key_env:
+            key_value = os.getenv(cfg.api_key_env, "")
+            if key_value:
+                extra["api_key"] = key_value
+        return extra
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -63,6 +90,8 @@ class Settings:
                 id=entry["id"],
                 provider=entry.get("provider", "unknown"),
                 display_name=entry.get("display_name", entry["id"]),
+                api_base=entry.get("api_base"),
+                api_key_env=entry.get("api_key_env"),
             )
             for entry in raw.get("models", [])
         ]
