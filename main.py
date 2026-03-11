@@ -57,20 +57,27 @@ def _is_rate_limit(err: str) -> bool:
 
 async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
     """
-    Ping every enabled model concurrently with a minimal prompt.
+    Ping every enabled model concurrently.
+    Each result is printed the moment it arrives — no waiting for stragglers.
 
     Returns
     -------
     hard_failed : list[str]
-        Model IDs with hard errors (auth, not found, etc.) — caller should abort.
     rate_limited : list[str]
-        Model IDs that returned a 429 rate-limit — caller should skip for this run.
     """
     models = settings.models
-    print(f"Health check ({len(models)} model(s))...")
+    n = len(models)
+    print(f"Health check ({n} model(s))...")
 
-    async def _ping(cfg) -> tuple[str, bool, float, str]:
+    hard_failed: list[str] = []
+    rate_limited: list[str] = []
+    # Use a queue so each task can push its result and the loop prints immediately.
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _ping(cfg) -> None:
         start = time.monotonic()
+        err = ""
+        ok = False
         try:
             await call_model(
                 cfg.id,
@@ -78,34 +85,37 @@ async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
                 temperature=0.0,
                 max_tokens=16,
                 retries=1,
-                backoff_on_rate_limit=False,   # health check must be fast
+                backoff_on_rate_limit=False,
                 **settings.model_extra(cfg.id),
             )
-            elapsed = time.monotonic() - start
-            return cfg.display_name, True, elapsed, ""
+            ok = True
         except Exception as exc:  # noqa: BLE001
-            elapsed = time.monotonic() - start
-            return cfg.display_name, False, elapsed, str(exc)
+            err = str(exc)
+        elapsed = time.monotonic() - start
+        await queue.put((cfg, ok, elapsed, err))
 
-    results = await asyncio.gather(*[_ping(m) for m in models])
+    # Fire all pings concurrently
+    tasks = [asyncio.create_task(_ping(m)) for m in models]
 
-    hard_failed: list[str] = []
-    rate_limited: list[str] = []
-    for m, (display, ok, elapsed, err) in zip(models, results):
+    # Consume results as they arrive
+    for i in range(n):
+        cfg, ok, elapsed, err = await queue.get()
         timing = f"[{elapsed:.2f}s]"
         if ok:
-            print(f"  [OK ]  {display:<40} {timing}")
+            print(f"  [OK ]  {cfg.display_name:<40} {timing}", flush=True)
         elif _is_rate_limit(err):
-            print(f"  [429 ] {display:<40} {timing}  rate-limited (will skip this run)")
-            rate_limited.append(m.id)
+            print(f"  [429 ] {cfg.display_name:<40} {timing}  rate-limited (will skip this run)", flush=True)
+            rate_limited.append(cfg.id)
         else:
             short_err = err.splitlines()[0][:80] if err else "unknown error"
-            print(f"  [FAIL] {display:<40} {timing}  {short_err}")
-            hard_failed.append(m.id)
+            print(f"  [FAIL] {cfg.display_name:<40} {timing}  {short_err}", flush=True)
+            hard_failed.append(cfg.id)
+
+    await asyncio.gather(*tasks)  # ensure all tasks are fully cleaned up
 
     total_failed = len(hard_failed) + len(rate_limited)
-    passed = len(models) - total_failed
-    print(f"Health check complete: {passed}/{len(models)} passed.\n")
+    passed = n - total_failed
+    print(f"Health check complete: {passed}/{n} passed.\n")
     return hard_failed, rate_limited
 
 
@@ -151,11 +161,12 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
 
     for cycle_num in range(1, cycles + 1):
         print(f"--- Cycle {cycle_num}/{cycles} ---")
-        result = await orchestrator.run_cycle(cycle_num=cycle_num)
 
-        print(f"  Generator : {result['generator']}")
-        print(f"  Solver    : {result['solver']}")
-        print(f"  Judges    : {', '.join(result['judges'])}")
+        def _progress(msg: str) -> None:
+            print(f"  {msg}", flush=True)
+
+        result = await orchestrator.run_cycle(cycle_num=cycle_num, on_progress=_progress)
+
         print(f"  Exec      : {result['execution_result']['summary']}")
         print(f"  Avg Score : {result['average_score']:.2f}/10")
 
