@@ -59,94 +59,130 @@ class Orchestrator:
         """
         Execute one full evaluation cycle.
 
-        Parameters
-        ----------
-        cycle_num : int
-            The 1-based cycle index (used for artifact storage).
-        on_progress : callable | None
-            Optional ``(msg: str) -> None`` callback invoked at each phase
-            transition for real-time terminal output.
+        New interaction model
+        --------------------
+        * **Generator** (1 model, randomly chosen) creates the problem.
+        * **All N models** (including Generator) independently solve it in parallel.
+        * **All models except Generator** judge every solution in parallel.
+          Fairness rule: a judge never scores its own solution.
         """
         def _emit(msg: str) -> None:
             if on_progress:
                 on_progress(msg)
 
         models = list(self.settings.model_names)
+        n = len(models)
 
         # ── 1. Role Assignment ──────────────────────────────────────────
-        generator, solver, judges = self._assign_roles(models)
-        _emit(f"Generator : {generator}")
-        _emit(f"Solver    : {solver}")
-        _emit(f"Judges    : {', '.join(judges)}")
+        generator = random.choice(models)
+        solvers   = models                                     # all N models solve
+        judges_pool = [m for m in models if m != generator]   # N-1 models judge
+
+        _emit(f"Generator  : {generator}")
+        _emit(f"Solvers    : all {n} models")
+        _emit(f"Judges pool: {len(judges_pool)} models (everyone except generator)")
 
         # ── 2. Generation Phase ─────────────────────────────────────────
         _emit("[1/5] Generating problem...")
         problem = await self._generate_problem(generator)
         _emit(f"      Problem : \"{problem.get('title', 'unknown')}\"")
 
-        # ── 3. Solving Phase ────────────────────────────────────────────
-        _emit("[2/5] Solving problem...")
-        solution = await self._solve_problem(solver, problem)
-        code_lines = len(solution.get("solution_code", "").splitlines())
-        _emit(f"      Solution: {code_lines} line(s) of code")
+        # ── 3. Solving Phase (all models in parallel) ───────────────────
+        _emit(f"[2/5] Solving ({n} solvers in parallel)...")
+        solve_queue: asyncio.Queue = asyncio.Queue()
 
-        # ── 4. Sandbox Execution ───────────────────────────────────────────
-        _emit("[3/5] Running sandbox execution...")
-        test_cases = problem.get("test_cases", [])
-        execution_result = self.executor.run(
-            solution.get("solution_code", ""),
-            test_cases=test_cases,
+        async def _solve_and_queue(model: str) -> None:
+            sol = await self._solve_problem(model, problem)
+            await solve_queue.put((model, sol))
+
+        solve_tasks = [asyncio.create_task(_solve_and_queue(m)) for m in solvers]
+        solutions: dict[str, Any] = {}
+        for _ in solvers:
+            model, sol = await solve_queue.get()
+            solutions[model] = sol
+            lines = len(sol.get("solution_code", "").splitlines())
+            _emit(f"      [{model.split('/')[-1]}] → {lines} line(s) of code")
+        await asyncio.gather(*solve_tasks)
+
+        # ── 4. Sandbox Execution (sequential, local CPU — fast) ─────────
+        _emit("[3/5] Running sandbox execution for all solutions...")
+        execution_results: dict[str, Any] = {}
+        for model in solvers:
+            exec_r = self.executor.run(
+                solutions[model].get("solution_code", ""),
+                test_cases=problem.get("test_cases", []),
+            )
+            execution_results[model] = exec_r
+            _emit(f"      [{model.split('/')[-1]}] {exec_r['summary']}")
+
+        # ── 5. Judging Phase (all pairs concurrent) ─────────────────────
+        # For each solver S: judges = judges_pool \ {S}  (can't judge yourself)
+        judge_pairs = [
+            (s, j) for s in solvers for j in judges_pool if j != s
+        ]
+        _emit(f"[4/5] Judging ({len(judge_pairs)} calls: {n} solutions × ~{len(judges_pool)-1} judges each)...")
+
+        judge_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _judge_and_queue(solver_model: str, judge_model: str) -> None:
+            jr = await self._call_single_judge(
+                judge_model, problem,
+                solutions[solver_model], execution_results[solver_model],
+            )
+            await judge_queue.put((solver_model, jr))
+
+        judge_tasks = [
+            asyncio.create_task(_judge_and_queue(s, j)) for s, j in judge_pairs
+        ]
+        judge_scores: dict[str, list] = {s: [] for s in solvers}
+        for _ in judge_pairs:
+            solver_id, jr = await judge_queue.get()
+            judge_scores[solver_id].append(jr)
+            score     = jr.get("overall_score", "?")
+            j_name    = jr.get("judge", "?").split("/")[-1]
+            s_name    = solver_id.split("/")[-1]
+            status    = "error" if jr.get("error") else f"{score:.1f}/10"
+            _emit(f"      [{j_name}] judged [{s_name}] → {status}")
+        await asyncio.gather(*judge_tasks)
+
+        # ── 6. Aggregate scores per solver ──────────────────────────────
+        average_scores: dict[str, float] = {}
+        for solver_model, results in judge_scores.items():
+            scores = [r.get("overall_score", 5.0) for r in results]
+            average_scores[solver_model] = sum(scores) / len(scores) if scores else 5.0
+        overall_average = (
+            sum(average_scores.values()) / len(average_scores)
+            if average_scores else 5.0
         )
-        _emit(f"      Exec    : {execution_result['summary']}")
-
-        # ── 5. Judging Phase (concurrent) ───────────────────────────────
-        _emit(f"[4/5] Judging ({len(judges)} judge(s) in parallel)...")
-        judge_results = await self._judge_solution(
-            judges, problem, solution, execution_result, on_progress=on_progress
-        )
-
-        # ── 6. Aggregate Scores ─────────────────────────────────────────
-        average_score = self._aggregate_scores(judge_results)
 
         # ── 7. Elo Update ───────────────────────────────────────────────
         _emit("[5/5] Updating Elo ratings...")
-        self.elo.update(solver=solver, judges=judges, score=average_score)
-        self.elo.update_generator(generator=generator, judges=judges, score=average_score)
+        for solver_model, avg_score in average_scores.items():
+            effective_judges = [j for j in judges_pool if j != solver_model]
+            self.elo.update(solver=solver_model, judges=effective_judges, score=avg_score)
+        self.elo.update_generator(
+            generator=generator, judges=judges_pool, score=overall_average
+        )
 
         return {
-            "cycle_num": cycle_num,
-            "timestamp": int(time.time()),
-            "generator": generator,
-            "solver": solver,
-            "judges": judges,
-            "problem": problem,
-            "solution": solution,
-            "problem_title": problem.get("title", "unknown"),
-            "execution_result": execution_result,
-            "judge_scores": judge_results,
-            "average_score": average_score,
-            "elo_after": self.elo.ratings_snapshot(),
+            "cycle_num":      cycle_num,
+            "timestamp":      int(time.time()),
+            "generator":      generator,
+            "solvers":        solvers,
+            "judges_pool":    judges_pool,
+            "problem":        problem,
+            "problem_title":  problem.get("title", "unknown"),
+            "solutions":      solutions,
+            "execution_results": execution_results,
+            "judge_scores":   judge_scores,    # {solver_id: [judge_result, ...]}
+            "average_scores": average_scores,  # {solver_id: float}
+            "overall_average": overall_average,
+            "elo_after":      self.elo.ratings_snapshot(),
         }
 
     # ------------------------------------------------------------------
-    # Role assignment
+    # Role assignment (legacy — inlined into run_cycle)
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _assign_roles(models: list[str]) -> tuple[str, str, list[str]]:
-        """
-        Randomly assign Generator, Solver, and Judges from *models*.
-
-        Guarantees:
-        * Generator ≠ Solver
-        * Solver ∉ Judges  (fairness rule)
-        """
-        shuffled = random.sample(models, len(models))
-        generator = shuffled[0]
-        solver = shuffled[1]
-        # All remaining models become judges (Solver is excluded by construction)
-        judges = shuffled[2:]
-        return generator, solver, judges
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
@@ -192,18 +228,17 @@ class Orchestrator:
             logger.error("Solving failed: %s", exc)
             return {"solution_code": "", "explanation": "Solver failed to produce a response."}
 
-    async def _judge_solution(
+    async def _call_single_judge(
         self,
-        judges: list[str],
+        judge: str,
         problem: dict[str, Any],
         solution: dict[str, Any],
         execution_result: dict,
-        on_progress: Any = None,
-    ) -> list[dict[str, Any]]:
-        """Call all judges concurrently; emit per-judge progress as each finishes."""
-        problem_text = json.dumps(problem, indent=2)
-        solution_text = json.dumps(solution, indent=2)
-        criteria = problem.get("evaluation_criteria", "Correctness, efficiency, and clarity.")
+    ) -> dict[str, Any]:
+        """Call one judge model and return its structured score dict."""
+        problem_text   = json.dumps(problem, indent=2)
+        solution_text  = json.dumps(solution, indent=2)
+        criteria       = problem.get("evaluation_criteria", "Correctness, efficiency, and clarity.")
         execution_text = (
             f"Status : {execution_result['status']}\n"
             f"Summary: {execution_result['summary']}\n"
@@ -220,40 +255,21 @@ class Orchestrator:
         if execution_result.get("stderr"):
             execution_text += f"Stderr : {execution_result['stderr']}\n"
 
-        queue: asyncio.Queue = asyncio.Queue()
-
-        async def _judge_one(judge: str) -> None:
-            prompt = (
-                self._judge_prompt_template
-                .replace("{problem}", problem_text)
-                .replace("{evaluation_criteria}", criteria)
-                .replace("{solution}", solution_text)
-                .replace("{execution_result}", execution_text)
-            )
-            try:
-                raw = await call_model(judge, prompt, temperature=0.2, **self._extra(judge))
-                result = parse_json_response(raw)
-                result["judge"] = judge
-            except (GatewayError, ValueError) as exc:
-                logger.error("Judge %s failed: %s", judge, exc)
-                result = {"judge": judge, "overall_score": 5.0, "error": str(exc)}
-            await queue.put(result)
-
-        tasks = [asyncio.create_task(_judge_one(j)) for j in judges]
-
-        results: list[dict[str, Any]] = []
-        short_names = {j: j.split("/")[-1] for j in judges}
-        for _ in judges:
-            r = await queue.get()
-            results.append(r)
-            if on_progress:
-                score = r.get("overall_score", "?")
-                name = short_names.get(r.get("judge", ""), r.get("judge", "?"))
-                status = "error" if r.get("error") else f"{score:.1f}/10"
-                on_progress(f"      Judge [{name}] → {status}")
-
-        await asyncio.gather(*tasks)
-        return results
+        prompt = (
+            self._judge_prompt_template
+            .replace("{problem}", problem_text)
+            .replace("{evaluation_criteria}", criteria)
+            .replace("{solution}", solution_text)
+            .replace("{execution_result}", execution_text)
+        )
+        try:
+            raw = await call_model(judge, prompt, temperature=0.2, **self._extra(judge))
+            result = parse_json_response(raw)
+            result["judge"] = judge
+            return result
+        except (GatewayError, ValueError) as exc:
+            logger.error("Judge %s failed: %s", judge, exc)
+            return {"judge": judge, "overall_score": 5.0, "error": str(exc)}
 
     # ------------------------------------------------------------------
     # Score aggregation
