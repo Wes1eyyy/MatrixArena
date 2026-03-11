@@ -103,13 +103,36 @@ async def call_model(
             )
             content: str = response.choices[0].message.content or ""
             finish_reason: str = response.choices[0].finish_reason or ""
-            if finish_reason == "length":
+            if not content.strip():
+                # Empty response — treat as a retryable failure
+                last_exc = GatewayError(f"Model {model!r} returned an empty response.")
                 logger.warning(
-                    "Model %s hit max_tokens=%d (finish_reason=length). "
-                    "Response may be truncated.",
-                    model,
-                    max_tokens,
+                    "Model %s returned empty content (attempt %d/%d).",
+                    model, attempt, retries + 1,
                 )
+                if attempt <= retries:
+                    await asyncio.sleep(2 ** (attempt - 1))
+                continue
+            if finish_reason == "length":
+                # Response was hard-truncated — retry with an explicit continuation prompt
+                logger.warning(
+                    "Model %s hit max_tokens=%d (finish_reason=length) — "
+                    "response likely truncated, retrying.",
+                    model, max_tokens,
+                )
+                if attempt <= retries:
+                    # Second attempt: add assistant's partial reply and ask to finish cleanly
+                    messages = [
+                        {"role": "user",    "content": prompt},
+                        {"role": "assistant", "content": content},
+                        {"role": "user",    "content":
+                            "Your previous response was cut off. "
+                            "Please output ONLY the complete JSON object from the beginning, "
+                            "with no extra text before or after it."},
+                    ]
+                    last_exc = GatewayError(f"Model {model!r} truncated (finish_reason=length).")
+                    await asyncio.sleep(2 ** (attempt - 1))
+                    continue
             return content.strip()
         except (KeyboardInterrupt, SystemExit):
             raise
