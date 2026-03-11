@@ -48,6 +48,7 @@ async def call_model(
     max_tokens: int = 4096,
     retries: int = 2,
     backoff_on_rate_limit: bool = True,
+    request_timeout: int = 120,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str:
@@ -94,12 +95,15 @@ async def call_model(
 
     for attempt in range(1, retries + 2):
         try:
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **extra,
+            response = await asyncio.wait_for(
+                litellm.acompletion(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **extra,
+                ),
+                timeout=request_timeout,
             )
             content: str = response.choices[0].message.content or ""
             finish_reason: str = response.choices[0].finish_reason or ""
@@ -136,6 +140,14 @@ async def call_model(
             return content.strip()
         except (KeyboardInterrupt, SystemExit):
             raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Model %s timed out after %ds (attempt %d/%d) — skipping.",
+                model, request_timeout, attempt, retries + 1,
+            )
+            raise GatewayError(
+                f"Model '{model}' timed out after {request_timeout}s."
+            )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             is_rl = _is_rate_limit(exc)

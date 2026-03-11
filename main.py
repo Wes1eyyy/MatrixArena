@@ -196,7 +196,7 @@ async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
     n = len(models)
     print(f"Health check ({n} model(s))...")
 
-    hard_failed: list[str] = []
+    hard_failed: list[tuple[str, str]] = []   # (model_id, error_msg)
     rate_limited: list[str] = []
     # Use a queue so each task can push its result and the loop prints immediately.
     queue: asyncio.Queue = asyncio.Queue()
@@ -211,8 +211,9 @@ async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
                 _HEALTH_PROMPT,
                 temperature=0.0,
                 max_tokens=16,
-                retries=1,
+                retries=2,
                 backoff_on_rate_limit=False,
+                request_timeout=30,
                 **settings.model_extra(cfg.id),
             )
             ok = True
@@ -234,9 +235,9 @@ async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
             print(f"  [429 ] {cfg.display_name:<40} {timing}  rate-limited (will skip this run)", flush=True)
             rate_limited.append(cfg.id)
         else:
-            short_err = err.splitlines()[0][:80] if err else "unknown error"
+            short_err = err.splitlines()[0][:120] if err else "unknown error"
             print(f"  [FAIL] {cfg.display_name:<40} {timing}  {short_err}", flush=True)
-            hard_failed.append(cfg.id)
+            hard_failed.append((cfg.id, short_err))
 
     await asyncio.gather(*tasks)  # ensure all tasks are fully cleaned up
 
@@ -262,25 +263,27 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
     if not skip_health_check:
         hard_failed, rate_limited = await health_check(settings)
 
-        # Rate-limited: temporarily remove from this run's model pool
+        # Collect all models to exclude (hard failures + rate-limited)
+        exclude_ids: set[str] = {mid for mid, _ in hard_failed} | set(rate_limited)
+
+        if hard_failed:
+            print(f"WARNING: {len(hard_failed)} model(s) failed health check and will be excluded from this run:")
+            for mid, reason in hard_failed:
+                print(f"  - {mid}")
+                print(f"      {reason}")
+
         if rate_limited:
             print(f"WARNING: {len(rate_limited)} model(s) are rate-limited and will be excluded from this run:")
             for mid in rate_limited:
                 print(f"  - {mid}")
-            settings.models = [m for m in settings.models if m.id not in rate_limited]
+
+        if exclude_ids:
+            settings.models = [m for m in settings.models if m.id not in exclude_ids]
             if len(settings.models) < 3:
-                print(f"ABORT: Only {len(settings.models)} model(s) remain after excluding rate-limited ones.")
+                print(f"ABORT: Only {len(settings.models)} model(s) remain after exclusions.")
                 print("Need at least 3 models (1 generator + 1 solver + 1 judge). Re-run later or add more models.")
                 raise SystemExit(1)
             print(f"  Continuing with {len(settings.models)} model(s).\n")
-
-        # Hard failures: abort
-        if hard_failed:
-            print(f"ABORT: {len(hard_failed)} model(s) failed health check:")
-            for f in hard_failed:
-                print(f"  - {f}")
-            print("Fix the failing models or run with --no-health-check to skip.")
-            raise SystemExit(1)
     else:
         print("(Health check skipped)\n")
 

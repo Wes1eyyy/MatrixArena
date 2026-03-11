@@ -63,7 +63,7 @@ class Orchestrator:
         --------------------
         * **Generator** (1 model, randomly chosen) creates the problem.
         * **All N models** (including Generator) independently solve it in parallel.
-        * **All models except Generator** judge every solution in parallel.
+        * **All N models** judge every solution except their own in parallel.
           Fairness rule: a judge never scores its own solution.
         """
         def _emit(msg: str) -> None:
@@ -76,11 +76,11 @@ class Orchestrator:
         # ── 1. Role Assignment ──────────────────────────────────────────
         generator = random.choice(models)
         solvers   = models                                     # all N models solve
-        judges_pool = [m for m in models if m != generator]   # N-1 models judge
+        judges_pool = models                              # all N models judge
 
         _emit(f"Generator  : {generator}")
         _emit(f"Solvers    : all {n} models")
-        _emit(f"Judges pool: {len(judges_pool)} models (everyone except generator)")
+        _emit(f"Judges pool: {len(judges_pool)} models (all, each skips own solution)")
 
         # ── 2. Generation Phase ─────────────────────────────────────────
         _emit("[1/5] Generating problem...")
