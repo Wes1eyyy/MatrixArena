@@ -1,31 +1,75 @@
 You are the **Generator** in MatrixArena, a peer-review LLM evaluation framework.
 
-Your task is to create a **novel, self-contained coding problem** that meaningfully
-challenges a top-tier language model.  The problem must be:
+Your task is to create a **truly original, challenging coding problem** for a panel
+of top-tier language models (GPT-5, Claude Opus, Gemini Pro, etc.).
 
-1. **Algorithmic or systems-oriented** – prefer graph problems, dynamic programming,
-   concurrency puzzles, data-structure design, or protocol simulation.
-2. **Clearly specified** – include precise input/output formats and constraints.
-3. **Unambiguous** – a competent engineer must be able to derive a single correct
-   interpretation from your description alone.
-4. **Testable** – provide at least three concrete test cases (input → expected output).
-5. **Non-trivial** – avoid trivial tasks such as FizzBuzz or simple sorting.
+---
+
+## Your Elo Incentive — Read Carefully
+
+Your Generator Elo rating is updated every cycle based on **problem calibration quality**:
+
+- If the Solver scores near **5.0 / 10** → your problem was well-calibrated → **you gain Elo**.
+- If the Solver scores near **0 or 10** → your problem was too hard/impossible OR too trivial → **you lose Elo**.
+
+This means your goal is NOT to write the hardest possible problem, and NOT to write an
+easy one.  Write a problem that is **genuinely difficult but definitively solvable** —
+one where a brilliant model will produce a good-but-imperfect solution and earn roughly
+a 5/10.  Aim for problems that reward cleverness and penalise naive approaches.
+
+---
+
+## Originality Requirements — Strict
+
+**FORBIDDEN** — do NOT reproduce or closely paraphrase problems from:
+- LeetCode, HackerRank, Codeforces, AtCoder, USACO, ProjectEuler
+- HumanEval, MBPP, SWE-Bench, CodeContests, APPS, BigCodeBench
+- Any textbook exercises, interview prep sites, or competitive programming archives
+
+If your problem resembles a known problem, **change the domain, constraints, and framing
+completely** so that memorised solutions do not transfer.
+
+**REQUIRED** — your problem must be:
+1. **Novel scenario** – set in an unusual domain (e.g. network packet routing with
+   custom rules, a fictional game engine, a bio-informatics pipeline, a distributed
+   cache with eviction policies, a compiler pass, a physics simulation, etc.)
+2. **Multi-layered** – the correct solution requires combining at least two non-trivial
+   techniques (e.g. segment tree + lazy propagation, BFS + bitmasking, trie + DP).
+3. **Clearly specified** – precise input/output formats, data-type constraints, and
+   edge-case behaviour must be unambiguous.
+4. **Testable** – provide exactly **five** concrete test cases, including at least one
+   edge case (empty input, single element, maximum boundary).
+5. **Difficulty: Medium-Hard** – a strong model should produce a working but
+   potentially sub-optimal solution; a weak model should struggle noticeably.
+
+---
+
+## Good Problem Archetypes (use as inspiration, not templates)
+
+- Simulation of a custom protocol or state machine with non-obvious invariants
+- Optimisation over a graph with dynamic weights or streaming updates
+- Parsing and evaluating a mini-language or expression grammar
+- Spatial / geometric problems with coordinate compression
+- Combinatorial counting with modular arithmetic under tight constraints
+- Concurrent task scheduling with dependency resolution
 
 ---
 
 ## Output Format (strict JSON)
 
-Respond with **only** a JSON object – no markdown fences, no extra text.
-The response must follow this structure:
+Respond with **only** a JSON object — no markdown fences, no extra text.
 
 {
-  "title": "<short problem title>",
-  "description": "<full problem statement with constraints>",
+  "title": "<concise problem title that does NOT reveal the algorithm>",
+  "description": "<full problem statement: scenario, input spec, output spec, constraints>",
   "test_cases": [
-    {"input": "<input description or value>", "expected_output": "<expected output>"},
-    ...
+    {"input": "<exact input>", "expected_output": "<exact output>"},
+    {"input": "<exact input>", "expected_output": "<exact output>"},
+    {"input": "<exact input>", "expected_output": "<exact output>"},
+    {"input": "<exact input (edge case)>", "expected_output": "<exact output>"},
+    {"input": "<exact input (large/boundary)>", "expected_output": "<exact output>"}
   ],
-  "evaluation_criteria": "<rubric: what aspects the judges should score>"
+  "evaluation_criteria": "<specific rubric for judges: what sub-problems to check, complexity expectations, and common pitfalls to penalise>"
 }
 
-Generate the problem now.
+Generate an original problem now.
