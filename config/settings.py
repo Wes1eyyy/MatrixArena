@@ -97,6 +97,17 @@ class Settings:
             for entry in raw.get("models", [])
         ]
 
+        # Deduplicate by model ID (preserves first occurrence order)
+        seen: set[str] = set()
+        unique_models: list[ModelConfig] = []
+        for m in all_models:
+            if m.id not in seen:
+                seen.add(m.id)
+                unique_models.append(m)
+            else:
+                print(f"  [warning] Duplicate model ID '{m.id}' in models.yaml — skipping extra entry.")
+        all_models = unique_models
+
         # Filter out models whose required API key env var is not set
         enabled: list[ModelConfig] = []
         for m in all_models:

@@ -29,6 +29,11 @@ _RATE_LIMIT_PATTERNS = ("ratelimiterror", "429", "rate_limit", "rate-limit", "re
 _RETRY_AFTER_RE = re.compile(r'retry_after_seconds["\s:]+([0-9]+)')
 
 
+def _clean_err(exc: Exception) -> str:
+    """Collapse whitespace in exception messages to avoid blank-line spam."""
+    return " ".join(str(exc).split()[:80])  # max 80 tokens, single line
+
+
 def _is_rate_limit(exc: Exception) -> bool:
     low = str(exc).lower()
     return any(p in low for p in _RATE_LIMIT_PATTERNS)
@@ -48,7 +53,7 @@ async def call_model(
     max_tokens: int = 4096,
     retries: int = 2,
     backoff_on_rate_limit: bool = True,
-    request_timeout: int = 120,
+    request_timeout: int = 180,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str:
@@ -156,7 +161,7 @@ async def call_model(
                 model,
                 attempt,
                 retries + 1,
-                exc,
+                _clean_err(exc),
             )
             if attempt <= retries:  # don't sleep after the last attempt
                 if is_rl and backoff_on_rate_limit:
@@ -169,6 +174,7 @@ async def call_model(
 
     raise GatewayError(
         f"All {retries + 1} attempts to call '{model}' failed."
+        + (f" Last error: {_clean_err(last_exc)}" if last_exc else "")
     ) from last_exc
 
 

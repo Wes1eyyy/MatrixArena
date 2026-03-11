@@ -213,12 +213,12 @@ async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
                 max_tokens=16,
                 retries=2,
                 backoff_on_rate_limit=False,
-                request_timeout=30,
+                request_timeout=40,
                 **settings.model_extra(cfg.id),
             )
             ok = True
         except Exception as exc:  # noqa: BLE001
-            err = str(exc)
+            err = " ".join(str(exc).split())
         elapsed = time.monotonic() - start
         await queue.put((cfg, ok, elapsed, err))
 
