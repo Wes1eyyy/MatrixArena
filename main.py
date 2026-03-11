@@ -78,6 +78,7 @@ async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
                 temperature=0.0,
                 max_tokens=16,
                 retries=1,
+                backoff_on_rate_limit=False,   # health check must be fast
                 **settings.model_extra(cfg.id),
             )
             elapsed = time.monotonic() - start

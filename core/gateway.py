@@ -7,8 +7,10 @@ consistent error handling, retries, and response normalisation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 import litellm
@@ -23,6 +25,21 @@ class GatewayError(Exception):
     """Raised when a model call fails after all retries."""
 
 
+_RATE_LIMIT_PATTERNS = ("ratelimiterror", "429", "rate_limit", "rate-limit", "retry_after")
+_RETRY_AFTER_RE = re.compile(r'retry_after_seconds["\s:]+([0-9]+)')
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return any(p in low for p in _RATE_LIMIT_PATTERNS)
+
+
+def _retry_after(exc: Exception) -> int:
+    """Extract retry_after_seconds from the error string, default to 60."""
+    m = _RETRY_AFTER_RE.search(str(exc))
+    return int(m.group(1)) if m else 60
+
+
 async def call_model(
     model: str,
     prompt: str,
@@ -30,6 +47,7 @@ async def call_model(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     retries: int = 2,
+    backoff_on_rate_limit: bool = True,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str:
@@ -89,6 +107,7 @@ async def call_model(
             raise
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            is_rl = _is_rate_limit(exc)
             logger.warning(
                 "Model %s failed (attempt %d/%d): %s",
                 model,
@@ -96,6 +115,14 @@ async def call_model(
                 retries + 1,
                 exc,
             )
+            if attempt <= retries:  # don't sleep after the last attempt
+                if is_rl and backoff_on_rate_limit:
+                    wait = _retry_after(exc)
+                    logger.info("Rate-limited — waiting %ds before retry...", wait)
+                    await asyncio.sleep(wait)
+                else:
+                    # Exponential backoff for transient errors: 1s, 2s, 4s…
+                    await asyncio.sleep(2 ** (attempt - 1))
 
     raise GatewayError(
         f"All {retries + 1} attempts to call '{model}' failed."
