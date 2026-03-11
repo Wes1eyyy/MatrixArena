@@ -85,7 +85,8 @@ class Settings:
             raw: dict[str, Any] = yaml.safe_load(fh)
 
         self.initial_elo = float(raw.get("initial_elo", self.initial_elo))
-        self.models = [
+
+        all_models: list[ModelConfig] = [
             ModelConfig(
                 id=entry["id"],
                 provider=entry.get("provider", "unknown"),
@@ -96,9 +97,23 @@ class Settings:
             for entry in raw.get("models", [])
         ]
 
+        # Filter out models whose required API key env var is not set
+        enabled: list[ModelConfig] = []
+        for m in all_models:
+            if m.api_key_env and not os.getenv(m.api_key_env, "").strip():
+                print(
+                    f"  [disabled] {m.display_name} — "
+                    f"{m.api_key_env} not set in environment, skipping."
+                )
+            else:
+                enabled.append(m)
+        self.models = enabled
+
         if len(self.models) < 3:
             raise ValueError(
-                "At least 3 models are required (one Generator, one Solver, one+ Judge)."
+                f"At least 3 models are required (one Generator, one Solver, one+ Judge), "
+                f"but only {len(self.models)} model(s) are enabled. "
+                f"Check that the required API keys are set in your .env file."
             )
 
     def load_prompt(self, name: str) -> str:
