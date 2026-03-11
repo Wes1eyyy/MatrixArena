@@ -67,9 +67,9 @@ Phase 3 ── SANDBOX EXECUTION ───────────────�
   Syntax check → test harness injection → per-test pass/fail.
 
 Phase 4 ── JUDGING (concurrent) ────────────────────────────────
-  All N-1 non-Generator models act as Judges.
+  All N models (including the Generator) act as Judges.
   Each Judge scores every solution except its own.
-  → N × (N-2) total scoring calls, all concurrent.
+  → N × (N-1) total scoring calls, all concurrent.
 
 Phase 5 ── ELO UPDATE ──────────────────────────────────────────
   Each Solver's Elo is updated from its aggregate judge score (K=32).
@@ -87,8 +87,8 @@ Phase 5 ── ELO UPDATE ──────────────────
 |---|---|---|
 | Generator | 1 | Randomly chosen each cycle |
 | Solvers | 10 | All models (inc. Generator) |
-| Judges per solution | 8 | All except Generator + the Solver being judged |
-| Total judge API calls | ~80 | Fully concurrent |
+| Judges per solution | 9 | All models except the Solver being judged |
+| Total judge API calls | ~90 | Fully concurrent |
 
 ---
 
@@ -126,7 +126,7 @@ Progress is printed in real time as each phase completes:
 --- Cycle 1/3 ---
   Generator  : openrouter/anthropic/claude-opus-4.6
   Solvers    : all 10 models
-  Judges pool: 9 models (everyone except generator)
+  Judges pool: 10 models (all, each skips own solution)
   [1/5] Generating problem...
         Problem : "Chrono-Gated Courier Network"
   [2/5] Solving (10 solvers in parallel)...
@@ -136,7 +136,7 @@ Progress is printed in real time as each phase completes:
   [3/5] Running sandbox execution for all solutions...
         [claude-opus-4.6] 5/5 tests passed
         ...
-  [4/5] Judging (72 calls: 10 solutions × ~8 judges each)...
+  [4/5] Judging (90 calls: 10 solutions × ~9 judges each)...
         [grok-4.1-fast] judged [gemini-3-pro-preview] → 8.5/10
         ...
   [5/5] Updating Elo ratings...
@@ -203,7 +203,7 @@ One JSON line per cycle. Fields:
   "timestamp": 1741696367,
   "generator": "openrouter/anthropic/claude-opus-4.6",
   "solvers": ["openrouter/anthropic/claude-opus-4.6", ...],   // all N models
-  "judges_pool": ["openrouter/google/gemini-3-pro-preview", ...],  // N-1
+  "judges_pool": ["openrouter/anthropic/claude-opus-4.6", ...],    // all N
   "problem_title": "Chrono-Gated Courier Network",
   "average_scores": {"openrouter/anthropic/claude-opus-4.6": 8.9, ...},
   "overall_average": 7.42,
