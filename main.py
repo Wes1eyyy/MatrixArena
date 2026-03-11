@@ -4,7 +4,10 @@ MatrixArena - CLI entry point.
 Run an evaluation cycle where LLMs generate tasks, solve them, and judge each other.
 
 Usage:
+    python main.py --health-check   # just run the health check and exit
     python main.py [--cycles N] [--no-health-check]
+    python main.py --reset-last     # undo the most recent cycle
+    python main.py --reset-all      # wipe all run data and start fresh
 """
 
 import argparse
@@ -12,6 +15,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 from datetime import datetime, timezone
 
@@ -44,16 +48,139 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run the model health check and exit without starting evaluation cycles",
     )
+    parser.add_argument(
+        "--reset-last",
+        action="store_true",
+        help="Remove the most recent cycle's artifacts and revert Elo to the previous state",
+    )
+    parser.add_argument(
+        "--reset-all",
+        action="store_true",
+        help="Wipe ALL run data (battles.jsonl, leaderboard.json, data/cycles/) and exit",
+    )
     return parser.parse_args()
 
 
-_RATE_LIMIT_MARKERS = ("ratelimiterror", "429", "rate_limit", "rate-limit", "retry_after")
+_DATA_DIR      = os.path.join(os.path.dirname(__file__), "data")
+_BATTLES_PATH  = os.path.join(_DATA_DIR, "battles.jsonl")
+_LB_PATH       = os.path.join(_DATA_DIR, "leaderboard.json")
+_CYCLES_DIR    = os.path.join(_DATA_DIR, "cycles")
+
+
+def _read_battles() -> list[dict]:
+    if not os.path.exists(_BATTLES_PATH):
+        return []
+    lines = []
+    with open(_BATTLES_PATH, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                try:
+                    lines.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    return lines
+
+
+def _write_battles(battles: list[dict]) -> None:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    with open(_BATTLES_PATH, "w", encoding="utf-8") as fh:
+        for b in battles:
+            fh.write(json.dumps(b, ensure_ascii=False) + "\n")
+
+
+def _elo_snap_to_leaderboard(elo_after: dict) -> list[dict]:
+    ranked = sorted(elo_after.items(), key=lambda x: -x[1])
+    return [{"rank": i + 1, "model": m, "elo": round(r, 2)} for i, (m, r) in enumerate(ranked)]
+
+
+def cmd_reset_last() -> None:
+    """Remove the most recent cycle and roll Elo back to the previous snapshot."""
+    battles = _read_battles()
+    if not battles:
+        print("Nothing to reset — battles.jsonl is empty.")
+        return
+
+    last = battles[-1]
+    cycle_num = last.get("cycle_num", "?")
+    ts        = last.get("timestamp", 0)
+    title     = last.get("problem_title", "?")
+    print(f"Removing cycle {cycle_num}  [{title}]  ts={ts}")
+
+    # 1. Remove last line from battles.jsonl
+    _write_battles(battles[:-1])
+
+    # 2. Restore leaderboard from the previous cycle's elo_after snapshot
+    if len(battles) >= 2:
+        prev_elo = battles[-2].get("elo_after", {})
+        lb = _elo_snap_to_leaderboard(prev_elo)
+        print(f"  Elo restored to snapshot from cycle {battles[-2].get('cycle_num', '?')}")
+    else:
+        lb = []   # no previous cycle — reset to blank
+        print("  Elo reset to initial (no previous cycle).")
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    with open(_LB_PATH, "w", encoding="utf-8") as fh:
+        json.dump(lb, fh, indent=2)
+
+    # 3. Delete the matching cycle directory (match by timestamp and cycle_num)
+    removed_dirs = []
+    if os.path.isdir(_CYCLES_DIR):
+        ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d_%H%M%S") if ts else ""
+        pattern = re.compile(rf"{ts_str}_c{cycle_num}$") if ts_str else None
+        for d in os.listdir(_CYCLES_DIR):
+            full = os.path.join(_CYCLES_DIR, d)
+            if os.path.isdir(full) and (pattern and pattern.match(d)):
+                shutil.rmtree(full)
+                removed_dirs.append(d)
+        if not removed_dirs:
+            # Fallback: delete the lexicographically last directory
+            dirs = sorted(os.listdir(_CYCLES_DIR))
+            if dirs:
+                full = os.path.join(_CYCLES_DIR, dirs[-1])
+                shutil.rmtree(full)
+                removed_dirs.append(dirs[-1])
+    if removed_dirs:
+        print(f"  Deleted cycle dir(s): {', '.join(removed_dirs)}")
+    else:
+        print("  No matching cycle directory found.")
+
+    print("Done. Last cycle removed.")
+
+
+def cmd_reset_all() -> None:
+    """Wipe every piece of run data."""
+    confirm = input(
+        "This will delete ALL battles, leaderboard data, and cycle artifacts.\n"
+        "Type 'yes' to confirm: "
+    ).strip().lower()
+    if confirm != "yes":
+        print("Aborted.")
+        return
+
+    removed = []
+    for path in (_BATTLES_PATH, _LB_PATH):
+        if os.path.exists(path):
+            os.remove(path)
+            removed.append(path)
+    if os.path.isdir(_CYCLES_DIR):
+        shutil.rmtree(_CYCLES_DIR)
+        removed.append(_CYCLES_DIR)
+
+    if removed:
+        for r in removed:
+            print(f"  Deleted: {r}")
+    else:
+        print("  Nothing to delete — data directory was already clean.")
+    print("Done. All run data cleared.")
+
+
+
 
 
 def _is_rate_limit(err: str) -> bool:
+    _RATE_LIMIT_MARKERS = ("ratelimiterror", "429", "rate_limit", "rate-limit", "retry_after")
     low = err.lower()
     return any(m in low for m in _RATE_LIMIT_MARKERS)
-
 
 async def health_check(settings: Settings) -> tuple[list[str], list[str]]:
     """
@@ -203,7 +330,7 @@ def _append_battle_log(result: dict) -> None:
         "overall_average": result["overall_average"],
         "elo_after":      result["elo_after"],
     }
-    log_path = os.path.join(os.path.dirname(__file__), "data", "battles.jsonl")
+    log_path = _BATTLES_PATH
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(compact, ensure_ascii=False) + "\n")
@@ -225,7 +352,7 @@ def _save_cycle_artifacts(result: dict) -> None:
     """
     ts = datetime.fromtimestamp(result["timestamp"], tz=timezone.utc)
     dir_name = f"{ts.strftime('%Y%m%d_%H%M%S')}_c{result.get('cycle_num', 0)}"
-    cycle_dir = os.path.join(os.path.dirname(__file__), "data", "cycles", dir_name)
+    cycle_dir = os.path.join(_CYCLES_DIR, dir_name)
     os.makedirs(cycle_dir, exist_ok=True)
 
     def _write(filename: str, data: object) -> None:
@@ -268,16 +395,23 @@ def _save_cycle_artifacts(result: dict) -> None:
 
 
 def _save_leaderboard(leaderboard: list[tuple[str, float]]) -> None:
-    lb_path = os.path.join(os.path.dirname(__file__), "data", "leaderboard.json")
-    os.makedirs(os.path.dirname(lb_path), exist_ok=True)
+    os.makedirs(_DATA_DIR, exist_ok=True)
     data = [{"rank": i + 1, "model": m, "elo": round(r, 2)} for i, (m, r) in enumerate(leaderboard)]
-    with open(lb_path, "w", encoding="utf-8") as fh:
+    with open(_LB_PATH, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
 
 
 def main() -> None:
     load_dotenv()
     args = parse_args()
+
+    if args.reset_all:
+        cmd_reset_all()
+        return
+
+    if args.reset_last:
+        cmd_reset_last()
+        return
 
     if args.health_check:
         settings = Settings()
