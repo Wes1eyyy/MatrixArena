@@ -21,3 +21,9 @@ env/
 .vscode/
 .idea/
 *.swp
+
+# MatrixArena runtime outputs
+# Full artifacts and logs are never committed — regenerate by running main.py
+data/battles.jsonl
+data/leaderboard.json
+data/cycles/

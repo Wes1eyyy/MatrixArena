@@ -11,7 +11,9 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -118,15 +120,17 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
 
     for cycle_num in range(1, cycles + 1):
         print(f"--- Cycle {cycle_num}/{cycles} ---")
-        result = await orchestrator.run_cycle()
+        result = await orchestrator.run_cycle(cycle_num=cycle_num)
 
         print(f"  Generator : {result['generator']}")
         print(f"  Solver    : {result['solver']}")
         print(f"  Judges    : {', '.join(result['judges'])}")
+        print(f"  Exec      : {result['execution_result']['summary']}")
         print(f"  Avg Score : {result['average_score']:.2f}/10")
 
-        # Persist battle log
+        # Persist logs
         _append_battle_log(result)
+        _save_cycle_artifacts(result)
 
     # Print final leaderboard
     leaderboard = orchestrator.elo.get_leaderboard()
@@ -141,10 +145,103 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
 
 
 def _append_battle_log(result: dict) -> None:
+    """
+    Append a compact summary line to data/battles.jsonl.
+
+    Full solution code and per-test execution details are intentionally
+    omitted here to keep the JSONL scannable.  Full artifacts are written
+    by _save_cycle_artifacts().
+    """
+    execution = result.get("execution_result", {})
+    compact = {
+        "cycle_num":    result.get("cycle_num"),
+        "timestamp":    result["timestamp"],
+        "generator":    result["generator"],
+        "solver":       result["solver"],
+        "judges":       result["judges"],
+        "problem_title": result["problem"].get("title", "unknown"),
+        "exec_status":  execution.get("status"),
+        "exec_summary": execution.get("summary"),
+        "exec_passed":  execution.get("passed"),
+        "exec_failed":  execution.get("failed"),
+        "judge_scores": [
+            {
+                "judge":         jr.get("judge"),
+                "overall_score": jr.get("overall_score"),
+                "scores":        jr.get("scores"),
+            }
+            for jr in result.get("judge_scores", [])
+        ],
+        "average_score": result["average_score"],
+        "elo_after":     result["elo_after"],
+    }
     log_path = os.path.join(os.path.dirname(__file__), "data", "battles.jsonl")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(result) + "\n")
+        fh.write(json.dumps(compact, ensure_ascii=False) + "\n")
+
+
+def _save_cycle_artifacts(result: dict) -> None:
+    """
+    Write full per-cycle artifacts to data/cycles/<dir>/.
+
+    Directory name: <YYYYMMDD_HHMMSS>_c<cycle_num>
+
+    Files written
+    -------------
+    summary.json          — roles, scores, elo snapshot (no code)
+    generator_problem.json — complete Generator output
+    solver_solution.json  — complete Solver output (code + explanation)
+    execution_result.json — sandbox per-test results
+    judge_<slug>.json     — one file per Judge (scores + feedback)
+    """
+    ts = datetime.fromtimestamp(result["timestamp"], tz=timezone.utc)
+    dir_name = f"{ts.strftime('%Y%m%d_%H%M%S')}_c{result.get('cycle_num', 0)}"
+    cycle_dir = os.path.join(os.path.dirname(__file__), "data", "cycles", dir_name)
+    os.makedirs(cycle_dir, exist_ok=True)
+
+    def _write(filename: str, data: object) -> None:
+        with open(os.path.join(cycle_dir, filename), "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+
+    # summary.json
+    _write("summary.json", {
+        "cycle_num":     result.get("cycle_num"),
+        "timestamp":     result["timestamp"],
+        "timestamp_utc": ts.isoformat(),
+        "generator":     result["generator"],
+        "solver":        result["solver"],
+        "judges":        result["judges"],
+        "problem_title": result["problem"].get("title", "unknown"),
+        "average_score": result["average_score"],
+        "exec_status":   result["execution_result"].get("status"),
+        "exec_summary":  result["execution_result"].get("summary"),
+        "exec_passed":   result["execution_result"].get("passed"),
+        "exec_failed":   result["execution_result"].get("failed"),
+        "elo_after":     result["elo_after"],
+    })
+
+    # generator_problem.json
+    _write("generator_problem.json", {
+        "model": result["generator"],
+        **result["problem"],
+    })
+
+    # solver_solution.json
+    _write("solver_solution.json", {
+        "model": result["solver"],
+        **result["solution"],
+    })
+
+    # execution_result.json
+    _write("execution_result.json", result["execution_result"])
+
+    # judge_<slug>.json  (one file per judge)
+    for jr in result.get("judge_scores", []):
+        judge_id = jr.get("judge", "unknown")
+        # Derive a safe filename from the model ID
+        slug = re.sub(r"[^\w-]", "_", judge_id)[:60]
+        _write(f"judge_{slug}.json", {"model": judge_id, **jr})
 
 
 def _save_leaderboard(leaderboard: list[tuple[str, float]]) -> None:

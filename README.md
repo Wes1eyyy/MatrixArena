@@ -18,23 +18,30 @@ MatrixArena/
 │   ├── settings.py          # Config loader (YAML + env vars)
 │   └── models.yaml          # Pool of participating models
 │
-├── prompts/                 # Prompt Engineering Library
-│   ├── generator.txt        # How to generate coding tasks
-│   ├── solver.txt           # How to output code solutions
-│   └── judge.txt            # Scoring dimensions + JSON schema
+├── prompts/                 # Prompt templates
+│   ├── generator.txt        # Novel problem generation + Elo incentive rules
+│   ├── solver.txt           # Solution output + originality warning
+│   └── judge.txt            # Scoring rubric + execution result integration
 │
 ├── core/
-│   ├── gateway.py           # litellm wrapper (async, retries)
+│   ├── gateway.py           # litellm wrapper (async, retries, api_base support)
 │   ├── orchestrator.py      # Gen → Solve → Judge loop
-│   └── elo_rating.py        # Elo rating updates
+│   └── elo_rating.py        # Elo for Solver + Generator calibration score
 │
 ├── sandbox/
-│   ├── Dockerfile           # Isolated execution env (placeholder)
-│   └── executor.py          # Mock executor (returns "Pass" in MVP)
+│   ├── Dockerfile           # Isolated execution image (non-root, no network)
+│   └── executor.py          # SubprocessExecutor: syntax check + per-test harness
 │
-├── data/
-│   ├── battles.jsonl        # Append-only battle log
-│   └── leaderboard.json     # Latest Elo snapshot
+├── data/                    # Runtime outputs (git-ignored)
+│   ├── battles.jsonl        # Append-only compact battle log
+│   ├── leaderboard.json     # Latest Elo snapshot
+│   └── cycles/              # Full per-cycle artifacts
+│       └── <YYYYMMDD_HHMMSS>_c<N>/
+│           ├── summary.json
+│           ├── generator_problem.json
+│           ├── solver_solution.json
+│           ├── execution_result.json
+│           └── judge_<model_slug>.json
 │
 └── dashboard/
     └── app.py               # Streamlit UI (stub)
@@ -95,6 +102,50 @@ The leaderboard is printed at the end and persisted to `data/leaderboard.json`. 
 
 ---
 
+## Data Storage
+
+Every evaluation cycle writes outputs to two locations:
+
+### `data/battles.jsonl` — compact append-only log
+
+One JSON line per cycle, containing role assignments, aggregate scores, per-judge scores, execution summary, and the post-cycle Elo snapshot. **Full solution code is omitted** to keep the file scannable.
+
+Useful for: Elo trend analysis, win-rate statistics, quick `grep` / `jq` queries.
+
+### `data/cycles/<YYYYMMDD_HHMMSS>_c<N>/` — full per-cycle artifacts
+
+One directory per cycle, named by UTC timestamp and cycle number.
+
+| File | Contents |
+|---|---|
+| `summary.json` | Roles, scores, Elo snapshot, execution summary (no code) |
+| `generator_problem.json` | Complete Generator output: title, description, test cases, evaluation criteria |
+| `solver_solution.json` | Complete Solver output: runnable Python code + explanation with complexity |
+| `execution_result.json` | Sandbox per-test results: status, pass/fail per test case, stderr |
+| `judge_<slug>.json` | Per-judge output: 5-dimension scores, overall score, feedback text |
+
+**Example directory layout after 2 cycles:**
+
+```
+data/
+├── battles.jsonl
+├── leaderboard.json
+└── cycles/
+    ├── 20260311_143022_c1/
+    │   ├── summary.json
+    │   ├── generator_problem.json
+    │   ├── solver_solution.json
+    │   ├── execution_result.json
+    │   ├── judge_openrouter_anthropic_claude-opus-4_6.json
+    │   └── judge_openrouter_google_gemini-3-pro-preview.json
+    └── 20260311_143301_c2/
+        └── ...
+```
+
+> All files under `data/` are git-ignored and never committed to the repository.
+
+---
+
 ## Configuration
 
 Edit `config/models.yaml` to change the model pool:
@@ -120,8 +171,12 @@ At least **3 models** are required (one Generator, one Solver, one or more Judge
 
 ## Roadmap
 
-- [ ] Real sandbox execution via Docker (replace `MockExecutor`)
+- [x] Real sandbox execution via subprocess (syntax check + per-test harness)
+- [x] Generator Elo incentive (problem calibration quality scoring)
+- [x] Full per-cycle artifact storage (`data/cycles/`)
+- [x] OpenRouter multi-provider support (10 models)
+- [x] ARK (ByteDance) direct endpoint support for Doubao
 - [ ] Streamlit leaderboard dashboard (`dashboard/app.py`)
+- [ ] Docker sandbox upgrade (replace subprocess with `docker run`)
 - [ ] Persistent Elo history with time-series plots
-- [ ] Support for more model providers (Cohere, Mistral, etc.)
 - [ ] Task difficulty classification and weighted scoring
