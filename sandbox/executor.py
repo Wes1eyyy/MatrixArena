@@ -184,6 +184,7 @@ class SubprocessExecutor:
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             return self._result(

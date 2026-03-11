@@ -295,7 +295,11 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
         def _progress(msg: str) -> None:
             print(f"  {msg}", flush=True)
 
-        result = await orchestrator.run_cycle(cycle_num=cycle_num, on_progress=_progress)
+        try:
+            result = await orchestrator.run_cycle(cycle_num=cycle_num, on_progress=_progress)
+        except RuntimeError as exc:
+            print(f"\nABORTING RUN: {exc}")
+            raise SystemExit(1) from exc
 
         print(f"  Overall avg : {result['overall_average']:.2f}/10")
         top = max(result['average_scores'].items(), key=lambda x: x[1])

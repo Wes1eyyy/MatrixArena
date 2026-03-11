@@ -53,7 +53,7 @@ async def call_model(
     max_tokens: int = 4096,
     retries: int = 2,
     backoff_on_rate_limit: bool = True,
-    request_timeout: int = 90,
+    request_timeout: int = 240,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str:
@@ -244,26 +244,44 @@ def parse_json_response(raw: str) -> dict[str, Any]:
     ValueError
         If the string cannot be parsed as JSON after clean-up.
     """
-    # Strip markdown code fences if present
     cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        lines = lines[1:]  # Remove the opening fence line (e.g. ```json)
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
+    
+    # 1. Strip markdown code fences more robustly (handles prose before/after)
+    start_idx = cleaned.find("```json")
+    if start_idx != -1:
+        start_content = start_idx + 7
+    else:
+        start_idx = cleaned.find("```")
+        start_content = start_idx + 3 if start_idx != -1 else 0
 
-    # Fast path: direct parse
+    if start_content > 0:
+        end_idx = cleaned.rfind("```")
+        if end_idx > start_content:
+            text_to_parse = cleaned[start_content:end_idx].strip()
+        else:
+            text_to_parse = cleaned[start_content:].strip()
+    else:
+        text_to_parse = cleaned
+
+    # 2. Fast path: direct parse
     try:
-        return json.loads(cleaned)
+        return json.loads(text_to_parse)
     except json.JSONDecodeError:
         pass
 
-    # Fallback: brace-matching extraction (handles prose prefix or truncated suffix)
-    extracted = _extract_json_object(cleaned)
+    # 3. Fallback: brace-matching extraction on the isolated text
+    extracted = _extract_json_object(text_to_parse)
     if extracted:
         try:
             return json.loads(extracted)
+        except json.JSONDecodeError:
+            pass
+
+    # 4. Last resort: brace-matching on the original raw input
+    extracted_orig = _extract_json_object(cleaned)
+    if extracted_orig:
+        try:
+            return json.loads(extracted_orig)
         except json.JSONDecodeError:
             pass
 
