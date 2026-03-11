@@ -106,10 +106,11 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
     if not skip_health_check:
         failed = await health_check(settings)
         if failed:
-            print(f"WARNING: {len(failed)} model(s) failed health check and will be skipped during cycles:")
+            print(f"ABORT: {len(failed)} model(s) failed health check:")
             for f in failed:
                 print(f"  - {f}")
-            print()
+            print("Fix the failing models or run with --no-health-check to skip.")
+            raise SystemExit(1)
     else:
         print("(Health check skipped)\n")
 

@@ -82,7 +82,10 @@ class Orchestrator:
         average_score = self._aggregate_scores(judge_results)
 
         # ── 7. Elo Update ───────────────────────────────────────────────
+        # Solver: rewarded for code quality (direct score)
         self.elo.update(solver=solver, judges=judges, score=average_score)
+        # Generator: rewarded for problem calibration (score near midpoint = good problem)
+        self.elo.update_generator(generator=generator, judges=judges, score=average_score)
 
         return {
             "timestamp": int(time.time()),
@@ -93,7 +96,7 @@ class Orchestrator:
             "execution_result": execution_result,
             "judge_scores": judge_results,
             "average_score": average_score,
-            "elo_after": dict(self.elo.get_leaderboard()),
+            "elo_after": self.elo.ratings_snapshot(),
         }
 
     # ------------------------------------------------------------------
