@@ -54,29 +54,46 @@ MatrixArena/
 Each cycle runs **5 sequential phases**:
 
 ```
-Phase 1 ── GENERATION ──────────────────────────────────────────
-  1 randomly chosen Generator model creates a novel coding problem
+### Phase 1 ── GENERATION ──────────────────────────────────────────
+  **Modes:**
+  - **Random:** A model is randomly chosen as the Generator.
+  - **Sequential (NEW):** If the total number of cycles specified (`--cycles`) is a multiple of the number of available models, the system enter **Sequential Mode**. Each model takes turns being the Generator exactly once (or twice, if `cycles = 2 * N`, etc.). This ensures 100% fairness in problem generation opportunities.
+  
+  The Generator creates a novel coding problem including:
   (JSON: title, description, test_cases, evaluation_criteria)
 
-Phase 2 ── SOLVING (all N models, concurrent) ──────────────────
+### Phase 2 ── SOLVING (all N models, concurrent) ──────────────────
   Every model in the pool — including the Generator — independently
   writes a Python solution to the same problem.
+  **Resilience:** If a solver times out (default 240s) or fails, it receives a score based on its actual performance (usually 0).
 
-Phase 3 ── SANDBOX EXECUTION ───────────────────────────────────
+### Phase 3 ── SANDBOX EXECUTION ───────────────────────────────────
   Each of the N solutions is run locally in a subprocess sandbox.
   Syntax check → test harness injection → per-test pass/fail.
+  **Hardened Sandbox:** Prevents infinite loops or hung processes using `stdin=null` and strict timeouts.
 
-Phase 4 ── JUDGING (concurrent) ────────────────────────────────
+### Phase 4 ── JUDGING (concurrent) ────────────────────────────────
   All N models (including the Generator) act as Judges.
   Each Judge scores every solution except its own.
   → N × (N-1) total scoring calls, all concurrent.
+  **Fairness & Reliability:** 
+  - A model never judges its own solution.
+  - **Score Aggregation:** If a judge fails to provide a score (timeout or API error), its "vote" is discarded. It no longer defaults to 5.0, ensuring that unreliable judges don't skew the leaderboard.
 
-Phase 5 ── ELO UPDATE ──────────────────────────────────────────
+### Phase 5 ── ELO UPDATE ──────────────────────────────────────────
   Each Solver's Elo is updated from its aggregate judge score (K=32).
   The Generator's Elo is updated by a calibration formula:
     outcome = 1 − |normalized_score − 0.5| × 2
   Peaks at score=5/10 (good difficulty), penalises trivial or
   impossible problems.
+---
+## Key Features & Resilience
+
+- **Sequential Generator Mode:** Automatically triggered when `cycles` is a multiple of the model count, ensuring every model serves as a generator equally.
+- **Enhanced Timeouts:** Default 240s timeout for API calls to accommodate slow-reasoning models (e.g., Qwen, O1/O3).
+- **Raw Output Logging:** Every raw LLM response is saved in `data/cycles/<timestamp>/raw/` for deep-dive analysis and debugging.
+- **Hard Abort on Generation Failure:** If a generator fails to produce a valid problem, the cycle is aborted immediately (preventing "Two Sum" fallbacks) to save execution time and credits.
+- **Robust JSON Parsing:** Advanced multi-stage parsing (Regex + Brace Balance) allows the system to extract JSON from models that provide conversational "fluff" or Markdown wrappers.
 ```
 
 **Fairness rule:** a model never judges its own solution.

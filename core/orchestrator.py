@@ -55,6 +55,7 @@ class Orchestrator:
         self,
         cycle_num: int = 0,
         on_progress: Any = None,
+        generator_override: str = None,
     ) -> dict[str, Any]:
         """
         Execute one full evaluation cycle.
@@ -78,7 +79,7 @@ class Orchestrator:
         api_sem = asyncio.Semaphore(5)
 
         # ── 1. Role Assignment ──────────────────────────────────────────
-        generator = random.choice(models)
+        generator = generator_override if generator_override else random.choice(models)
         solvers   = models                                     # all N models solve
         judges_pool = models                              # all N models judge
 

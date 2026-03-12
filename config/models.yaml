@@ -31,7 +31,7 @@ models:
   - id: openai/qwen3.5-plus
     provider: bailian
     display_name: Qwen3.5 Plus
-    api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_key_env: BAILIAN_API_KEY
 
   - id: openai/MiniMax-M2.5
@@ -45,6 +45,12 @@ models:
     display_name: Kimi K2.5
     api_base: https://coding.dashscope.aliyuncs.com/v1
     api_key_env: BAILIAN_CODING_PLAN_API_KEY
+
+  - id: openai/glm-5
+    provider: bailian
+    display_name: GLM 5
+    api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: BAILIAN_API_KEY
 
   # ByteDance Ark — OpenAI-compatible endpoint (Coding Plan)
   # Base URL: https://ark.cn-beijing.volces.com/api/coding/v3
@@ -61,11 +67,6 @@ models:
     api_base: https://ark.cn-beijing.volces.com/api/v3
     api_key_env: ARK_API_KEY
 
-  - id: openai/glm-4-7-251222
-    provider: ark
-    display_name: GLM 4.7
-    api_base: https://ark.cn-beijing.volces.com/api/v3
-    api_key_env: ARK_API_KEY
 
 # Starting Elo rating assigned to every new model
 initial_elo: 1200
