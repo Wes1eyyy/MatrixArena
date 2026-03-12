@@ -53,7 +53,7 @@ async def call_model(
     max_tokens: int = 4096,
     retries: int = 2,
     backoff_on_rate_limit: bool = True,
-    request_timeout: int = 240,
+    request_timeout: int = 600,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str:
