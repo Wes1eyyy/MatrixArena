@@ -287,7 +287,14 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
     else:
         print("(Health check skipped)\n")
 
+    models = settings.model_names
+    num_models = len(models)
+    is_sequential = (cycles > 0 and cycles % num_models == 0)
+
     print(f"Running {cycles} evaluation cycle(s)...\n")
+    if is_sequential:
+        print(f"Cycle count ({cycles}) is a multiple of model count ({num_models}).")
+        print("Switching to Sequential Generator Mode: each model will take turns being the generator.\n")
 
     for cycle_num in range(1, cycles + 1):
         print(f"--- Cycle {cycle_num}/{cycles} ---")
@@ -295,8 +302,16 @@ async def run(cycles: int, skip_health_check: bool = False) -> None:
         def _progress(msg: str) -> None:
             print(f"  {msg}", flush=True)
 
+        generator_override = None
+        if is_sequential:
+            generator_override = models[(cycle_num - 1) % num_models]
+
         try:
-            result = await orchestrator.run_cycle(cycle_num=cycle_num, on_progress=_progress)
+            result = await orchestrator.run_cycle(
+                cycle_num=cycle_num,
+                on_progress=_progress,
+                generator_override=generator_override
+            )
         except RuntimeError as exc:
             print(f"\nABORTING RUN: {exc}")
             raise SystemExit(1) from exc
