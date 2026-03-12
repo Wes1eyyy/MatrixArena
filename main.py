@@ -8,6 +8,7 @@ Usage:
     python main.py [--cycles N] [--no-health-check]
     python main.py --reset-last     # undo the most recent cycle
     python main.py --reset-all      # wipe all run data and start fresh
+    python main.py --backup         # move all records into a backup folder
 """
 
 import argparse
@@ -58,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Wipe ALL run data (battles.jsonl, leaderboard.json, data/cycles/) and exit",
     )
+    parser.add_argument(
+        "--backup",
+        action="store_true",
+        help="Copy all contents from 'data' folder to a new 'backup_data' folder",
+    )
     return parser.parse_args()
 
 
@@ -65,6 +71,7 @@ _DATA_DIR      = os.path.join(os.path.dirname(__file__), "data")
 _BATTLES_PATH  = os.path.join(_DATA_DIR, "battles.jsonl")
 _LB_PATH       = os.path.join(_DATA_DIR, "leaderboard.json")
 _CYCLES_DIR    = os.path.join(_DATA_DIR, "cycles")
+_BACKUP_DIR    = os.path.join(os.path.dirname(__file__), "backup_data")
 
 
 def _read_battles() -> list[dict]:
@@ -174,6 +181,34 @@ def cmd_reset_all() -> None:
     print("Done. All run data cleared.")
 
 
+def _copy_merge(src, dst):
+    """Recursively copies files/dirs from src to dst."""
+    if os.path.isdir(src):
+        if not os.path.exists(dst):
+            os.makedirs(dst, exist_ok=True)
+        for item in os.listdir(src):
+            _copy_merge(os.path.join(src, item), os.path.join(dst, item))
+    else:
+        # If destination file exists, overwrite it
+        shutil.copy2(src, dst)
+
+def cmd_backup() -> None:
+    """Copy all contents from 'data' to 'backup'."""
+    if not os.path.isdir(_DATA_DIR):
+        print("No data folder found to backup.")
+        return
+
+    os.makedirs(_BACKUP_DIR, exist_ok=True)
+    items = os.listdir(_DATA_DIR)
+    if not items:
+        print("Data folder is empty.")
+        return
+
+    print(f"Backing up (copying) data to {_BACKUP_DIR}...")
+    for item in items:
+        _copy_merge(os.path.join(_DATA_DIR, item), os.path.join(_BACKUP_DIR, item))
+        print(f"  Processed: {item}")
+    print("Backup complete.")
 
 
 
@@ -461,6 +496,10 @@ def _save_leaderboard(leaderboard: list[tuple[str, float]]) -> None:
 def main() -> None:
     load_dotenv()
     args = parse_args()
+
+    if args.backup:
+        cmd_backup()
+        return
 
     if args.reset_all:
         cmd_reset_all()

@@ -27,3 +27,4 @@ env/
 data/leaderboard.json
 data/cycles/
 data/battles.jsonl
+backup_data/

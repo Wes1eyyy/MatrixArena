@@ -90,6 +90,7 @@ Each cycle runs **5 sequential phases**:
 ## Key Features & Resilience
 
 - **Sequential Generator Mode:** Automatically triggered when `cycles` is a multiple of the model count, ensuring every model serves as a generator equally.
+- **Data Backup & Merge:** Added `--backup` command to safely transfer `data/` contents to a persistent `backup/` directory with automatic recursive merging.
 - **Enhanced Timeouts:** Default 240s timeout for API calls to accommodate slow-reasoning models (e.g., Qwen, O1/O3).
 - **Raw Output Logging:** Every raw LLM response is saved in `data/cycles/<timestamp>/raw/` for deep-dive analysis and debugging.
 - **Hard Abort on Generation Failure:** If a generator fails to produce a valid problem, the cycle is aborted immediately (preventing "Two Sum" fallbacks) to save execution time and credits.
@@ -133,8 +134,14 @@ cp .env.example .env
 # Run 3 cycles (default from .env NUM_CYCLES or hardcoded default)
 python main.py
 
-# Run a specific number of cycles
+# Run a specific number of cycles (e.g. 10 to trigger Sequential Mode)
 python main.py --cycles 10
+
+# Backup (copy) all current records from data/ to backup/
+python main.py --backup
+
+# Reset all previous run data (Clear data/ folder)
+python main.py --reset-all
 ```
 
 Progress is printed in real time as each phase completes:
