@@ -29,6 +29,11 @@ _RATE_LIMIT_PATTERNS = ("ratelimiterror", "429", "rate_limit", "rate-limit", "re
 _RETRY_AFTER_RE = re.compile(r'retry_after_seconds["\s:]+([0-9]+)')
 
 
+def _clean_err(exc: Exception) -> str:
+    """Collapse whitespace in exception messages to avoid blank-line spam."""
+    return " ".join(str(exc).split()[:80])  # max 80 tokens, single line
+
+
 def _is_rate_limit(exc: Exception) -> bool:
     low = str(exc).lower()
     return any(p in low for p in _RATE_LIMIT_PATTERNS)
@@ -48,7 +53,7 @@ async def call_model(
     max_tokens: int = 4096,
     retries: int = 2,
     backoff_on_rate_limit: bool = True,
-    request_timeout: int = 120,
+    request_timeout: int = 600,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str:
@@ -148,6 +153,15 @@ async def call_model(
             raise GatewayError(
                 f"Model '{model}' timed out after {request_timeout}s."
             )
+        except asyncio.CancelledError:
+            # aiohttp can raise CancelledError during cleanup after a timeout cancel
+            logger.warning(
+                "Model %s cancelled (attempt %d/%d) — treating as timeout.",
+                model, attempt, retries + 1,
+            )
+            raise GatewayError(
+                f"Model '{model}' request was cancelled (possible timeout)."
+            )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             is_rl = _is_rate_limit(exc)
@@ -156,7 +170,7 @@ async def call_model(
                 model,
                 attempt,
                 retries + 1,
-                exc,
+                _clean_err(exc),
             )
             if attempt <= retries:  # don't sleep after the last attempt
                 if is_rl and backoff_on_rate_limit:
@@ -169,6 +183,7 @@ async def call_model(
 
     raise GatewayError(
         f"All {retries + 1} attempts to call '{model}' failed."
+        + (f" Last error: {_clean_err(last_exc)}" if last_exc else "")
     ) from last_exc
 
 
@@ -229,26 +244,44 @@ def parse_json_response(raw: str) -> dict[str, Any]:
     ValueError
         If the string cannot be parsed as JSON after clean-up.
     """
-    # Strip markdown code fences if present
     cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        lines = lines[1:]  # Remove the opening fence line (e.g. ```json)
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
+    
+    # 1. Strip markdown code fences more robustly (handles prose before/after)
+    start_idx = cleaned.find("```json")
+    if start_idx != -1:
+        start_content = start_idx + 7
+    else:
+        start_idx = cleaned.find("```")
+        start_content = start_idx + 3 if start_idx != -1 else 0
 
-    # Fast path: direct parse
+    if start_content > 0:
+        end_idx = cleaned.rfind("```")
+        if end_idx > start_content:
+            text_to_parse = cleaned[start_content:end_idx].strip()
+        else:
+            text_to_parse = cleaned[start_content:].strip()
+    else:
+        text_to_parse = cleaned
+
+    # 2. Fast path: direct parse
     try:
-        return json.loads(cleaned)
+        return json.loads(text_to_parse)
     except json.JSONDecodeError:
         pass
 
-    # Fallback: brace-matching extraction (handles prose prefix or truncated suffix)
-    extracted = _extract_json_object(cleaned)
+    # 3. Fallback: brace-matching extraction on the isolated text
+    extracted = _extract_json_object(text_to_parse)
     if extracted:
         try:
             return json.loads(extracted)
+        except json.JSONDecodeError:
+            pass
+
+    # 4. Last resort: brace-matching on the original raw input
+    extracted_orig = _extract_json_object(cleaned)
+    if extracted_orig:
+        try:
+            return json.loads(extracted_orig)
         except json.JSONDecodeError:
             pass
 

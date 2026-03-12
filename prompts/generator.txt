@@ -58,6 +58,7 @@ completely** so that memorised solutions do not transfer.
 ## Output Format (strict JSON)
 
 Respond with **only** a JSON object — no markdown fences, no extra text.
+***VERY IMPORTANT* your response should strictly follows Output Format, otherwise, you may lose all your marks.
 
 {
   "title": "<concise problem title that does NOT reveal the algorithm>",

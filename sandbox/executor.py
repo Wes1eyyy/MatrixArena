@@ -37,7 +37,7 @@ import textwrap
 from pathlib import Path
 
 # Maximum wall-clock seconds allowed for a single execution
-DEFAULT_TIMEOUT: int = 15
+DEFAULT_TIMEOUT: int = 30
 
 # ---------------------------------------------------------------------------
 # Test-harness template injected after the solution code
@@ -184,6 +184,7 @@ class SubprocessExecutor:
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             return self._result(

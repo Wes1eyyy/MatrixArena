@@ -64,7 +64,7 @@ class Orchestrator:
         * **Generator** (1 model, randomly chosen) creates the problem.
         * **All N models** (including Generator) independently solve it in parallel.
         * **All N models** judge every solution except their own in parallel.
-          Fairness rule: a judge never scores its own solution.
+          Fairness rule: a judge never scores its own solution. 
         """
         def _emit(msg: str) -> None:
             if on_progress:
@@ -72,6 +72,10 @@ class Orchestrator:
 
         models = list(self.settings.model_names)
         n = len(models)
+
+        # To prevent API timeouts from flooding providers (Bailian, ARK) with
+        # concurrent requests, we throttle the number of simultaneous API calls.
+        api_sem = asyncio.Semaphore(5)
 
         # ── 1. Role Assignment ──────────────────────────────────────────
         generator = random.choice(models)
@@ -92,7 +96,14 @@ class Orchestrator:
         solve_queue: asyncio.Queue = asyncio.Queue()
 
         async def _solve_and_queue(model: str) -> None:
-            sol = await self._solve_problem(model, problem)
+            try:
+                async with api_sem:
+                    sol = await self._solve_problem(model, problem)
+            except BaseException as exc:  # includes CancelledError from aiohttp cleanup
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.error("Solving task for %s failed unexpectedly: %s", model, exc)
+                sol = {"solution_code": "", "explanation": f"Solver task failed: {exc}"}
             await solve_queue.put((model, sol))
 
         solve_tasks = [asyncio.create_task(_solve_and_queue(m)) for m in solvers]
@@ -125,10 +136,17 @@ class Orchestrator:
         judge_queue: asyncio.Queue = asyncio.Queue()
 
         async def _judge_and_queue(solver_model: str, judge_model: str) -> None:
-            jr = await self._call_single_judge(
-                judge_model, problem,
-                solutions[solver_model], execution_results[solver_model],
-            )
+            try:
+                async with api_sem:
+                    jr = await self._call_single_judge(
+                        judge_model, problem,
+                        solutions[solver_model], execution_results[solver_model],
+                    )
+            except BaseException as exc:  # includes CancelledError from aiohttp cleanup
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.error("Judge task %s->%s failed unexpectedly: %s", judge_model, solver_model, exc)
+                jr = {"judge": judge_model, "error": str(exc)}
             await judge_queue.put((solver_model, jr))
 
         judge_tasks = [
@@ -141,18 +159,27 @@ class Orchestrator:
             score     = jr.get("overall_score", "?")
             j_name    = jr.get("judge", "?").split("/")[-1]
             s_name    = solver_id.split("/")[-1]
-            status    = "error" if jr.get("error") else f"{score:.1f}/10"
+            try:
+                status = "error" if jr.get("error") else f"{float(score):.1f}/10"
+            except (TypeError, ValueError):
+                status = f"{score}/10"
             _emit(f"      [{j_name}] judged [{s_name}] → {status}")
         await asyncio.gather(*judge_tasks)
 
         # ── 6. Aggregate scores per solver ──────────────────────────────
         average_scores: dict[str, float] = {}
         for solver_model, results in judge_scores.items():
-            scores = [r.get("overall_score", 5.0) for r in results]
-            average_scores[solver_model] = sum(scores) / len(scores) if scores else 5.0
+            scores = []
+            for r in results:
+                if "error" not in r and "overall_score" in r and r["overall_score"] is not None:
+                    try:
+                        scores.append(float(r["overall_score"]))
+                    except (TypeError, ValueError):
+                        pass
+            average_scores[solver_model] = sum(scores) / len(scores) if scores else 0.0
         overall_average = (
             sum(average_scores.values()) / len(average_scores)
-            if average_scores else 5.0
+            if average_scores else 0.0
         )
 
         # ── 7. Elo Update ───────────────────────────────────────────────
@@ -203,13 +230,13 @@ class Orchestrator:
                 max_tokens=16384,
                 **self._extra(generator),
             )
-            return parse_json_response(raw)
-        except GatewayError as exc:
-            logger.error("Generation failed (gateway): %s", exc)
-            return self._fallback_problem()
-        except ValueError as exc:
-            logger.error("Generation failed (JSON parse): %s", exc)
-            return self._fallback_problem()
+            parsed = parse_json_response(raw)
+            parsed["_raw_output"] = raw
+            return parsed
+        except (GatewayError, ValueError) as exc:
+            # If problem generation fails, we abort the cycle instead of using a fallback.
+            # This ensures we don't waste credits/time on a cycle that isn't original.
+            raise RuntimeError(f"Critical failure: Generator '{generator}' failed to produce a valid problem: {exc}") from exc
 
     async def _solve_problem(self, solver: str, problem: dict[str, Any]) -> dict[str, Any]:
         """Ask the Solver model to produce a solution to *problem*."""
@@ -223,7 +250,9 @@ class Orchestrator:
                 max_tokens=16384,
                 **self._extra(solver),
             )
-            return parse_json_response(raw)
+            parsed = parse_json_response(raw)
+            parsed["_raw_output"] = raw
+            return parsed
         except (GatewayError, ValueError) as exc:
             logger.error("Solving failed: %s", exc)
             return {"solution_code": "", "explanation": "Solver failed to produce a response."}
@@ -266,10 +295,14 @@ class Orchestrator:
             raw = await call_model(judge, prompt, temperature=0.2, **self._extra(judge))
             result = parse_json_response(raw)
             result["judge"] = judge
+            result["_raw_output"] = raw
             return result
         except (GatewayError, ValueError) as exc:
             logger.error("Judge %s failed: %s", judge, exc)
-            return {"judge": judge, "overall_score": 5.0, "error": str(exc)}
+            err_dict = {"judge": judge, "error": str(exc)}
+            if "raw" in locals():
+                err_dict["_raw_output"] = raw
+            return err_dict
 
     # ------------------------------------------------------------------
     # Score aggregation
@@ -278,8 +311,14 @@ class Orchestrator:
     @staticmethod
     def _aggregate_scores(judge_results: list[dict[str, Any]]) -> float:
         """Return the mean overall_score across all judge results."""
-        scores = [r.get("overall_score", 5.0) for r in judge_results]
-        return sum(scores) / len(scores) if scores else 5.0
+        scores = []
+        for r in judge_results:
+            if "error" not in r and "overall_score" in r and r["overall_score"] is not None:
+                try:
+                    scores.append(float(r["overall_score"]))
+                except (TypeError, ValueError):
+                    pass
+        return sum(scores) / len(scores) if scores else 0.0
 
     # ------------------------------------------------------------------
     # Fallback helpers
